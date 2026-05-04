@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+dist/
+build/
+
+# Backend session log artifact
+backend/session-logs.json
+
+# Earlier scaffold attempt (orphaned nested repo)
+Real-time-collaborative-digital-abacus-for-online-tutoring/

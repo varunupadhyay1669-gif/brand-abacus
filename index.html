@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Abacus Studio — Real-time Formula-First Soroban</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=3" />
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="app-header glass">
+  <div class="brand">
+    <div class="logo-dot"></div>
+    <h1>Abacus <span>Studio</span></h1>
+  </div>
+  <div class="stat-pills">
+    <div class="pill"><span class="pill-label">Score</span><span id="pill-score">0</span></div>
+    <div class="pill"><span class="pill-label">Streak</span><span id="pill-streak">0</span></div>
+    <div class="pill"><span class="pill-label">Time</span><span id="pill-timer">00:00</span></div>
+    <button id="btn-open-sidebar" class="icon-btn" title="Formula Reference (F)">📘</button>
+  </div>
+</header>
+
+<!-- ROOM BAR -->
+<section class="room-bar glass">
+  <div class="room-bar-idle" id="room-bar-idle">
+    <button class="btn primary" id="btn-create-room">＋ Create Room</button>
+    <div class="divider">or</div>
+    <input id="inp-join-code" class="input" placeholder="Enter 6-char code" maxlength="6" />
+    <button class="btn" id="btn-join-room">Join as Student</button>
+    <span class="hint-text">Teacher creates → shares link → students join live</span>
+  </div>
+  <div class="room-bar-connected hidden" id="room-bar-connected">
+    <span class="room-tag">Room</span>
+    <code id="room-code-display" class="room-code">------</code>
+    <button class="btn sm" id="btn-copy-link">🔗 Share Link</button>
+    <span class="role-pill" id="role-pill">Teacher</span>
+    <span class="user-count" id="user-count">👥 1</span>
+    <span class="lock-pill" id="lock-pill" title="Student control state">🔒 Student locked</span>
+    <button class="btn sm danger" id="btn-leave-room">Leave</button>
+  </div>
+</section>
+
+<!-- MAIN -->
+<main class="layout">
+  <!-- ABACUS -->
+  <section class="abacus-section glass">
+    <div class="abacus-header">
+      <h2>Soroban</h2>
+      <div class="abacus-controls">
+        <label>Rods:
+          <select id="sel-rod-count">
+            <option>3</option><option>5</option>
+            <option selected>7</option>
+            <option>9</option><option>11</option><option>13</option>
+          </select>
+        </label>
+        <button class="btn sm" id="btn-reset-abacus">⟲ Reset</button>
+        <input id="inp-set-value" class="input sm-input" type="number" min="0" placeholder="Set to…" />
+        <button class="btn sm" id="btn-set-value">Set</button>
+      </div>
+      <div class="value-display"><span class="vd-label">VALUE</span><span id="abacus-value">0</span></div>
+    </div>
+    <div class="abacus-frame" id="abacus-frame">
+      <!-- Rods injected by JS -->
+    </div>
+  </section>
+
+  <!-- TEACHER CONTROLS -->
+  <section class="teacher-controls glass">
+    <h3>Teacher Controls</h3>
+    <div class="row sync-row">
+      <button class="btn primary" id="btn-toggle-lock">🔓 Unlock Student</button>
+      <span class="hint-text">Student is in view-only mode by default. Unlock to let them move beads.</span>
+    </div>
+    <div class="row push-q-row">
+      <input class="input grow" id="inp-push-q" placeholder="Push a question to student (e.g. 7 + 5 = ?)" />
+      <button class="btn" id="btn-push-q">📤 Push to Student</button>
+      <button class="btn sm" id="btn-save-log">💾 Save Session Log</button>
+    </div>
+    <div class="grid2">
+      <label>Level
+        <select id="sel-level"></select>
+      </label>
+      <label>Trick
+        <select id="sel-trick"></select>
+      </label>
+      <label>Mode
+        <select id="sel-mode">
+          <option value="guided">Guided (panel shown)</option>
+          <option value="recall">Recall (panel hidden)</option>
+          <option value="mixed" disabled>Mixed (locked)</option>
+        </select>
+      </label>
+      <label>Question Count
+        <input type="number" id="inp-qcount" min="1" max="50" value="10" />
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="btn-generate">✨ Generate Practice</button>
+      <button class="btn" id="btn-custom-toggle">Custom Sequence</button>
+    </div>
+    <div class="row hidden" id="custom-row">
+      <input class="input grow" id="inp-custom" placeholder="e.g. 5+3-2+7" />
+      <button class="btn" id="btn-play-custom">▶ Step</button>
+    </div>
+    <div class="row">
+      <label>Dictation
+        <select id="sel-speed">
+          <option value="0.75">0.75x</option>
+          <option value="1" selected>1x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2x</option>
+        </select>
+      </label>
+      <label>Voice
+        <select id="sel-lang">
+          <option value="en-IN">English (IN)</option>
+          <option value="hi-IN">Hindi</option>
+        </select>
+      </label>
+      <button class="btn sm" id="btn-dict-play">▶ Play</button>
+      <button class="btn sm" id="btn-dict-pause">⏸</button>
+      <button class="btn sm" id="btn-dict-repeat">↻ Row</button>
+    </div>
+  </section>
+
+  <!-- PRACTICE PANEL -->
+  <section class="practice glass">
+    <div class="practice-header">
+      <h3>Practice</h3>
+      <div class="practice-meta">
+        <span id="qpos">—</span>
+        <span id="trick-tag" class="trick-tag hidden"></span>
+      </div>
+    </div>
+    <div class="pushed-q hidden" id="pushed-q"></div>
+    <div class="q-column" id="q-column">
+      <div class="empty-state">Click <b>Generate Practice</b> to start. Teacher picks the trick — students focus on the WHY.</div>
+    </div>
+    <div class="why-line hidden" id="why-line"></div>
+    <div class="answer-row">
+      <input type="number" id="inp-answer" class="input big" placeholder="Your answer" />
+      <button class="btn primary" id="btn-check">Check (Enter)</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-hint">💡 Show Hint (H)</button>
+      <button class="btn" id="btn-stuck">🆘 I'm Stuck</button>
+      <button class="btn" id="btn-skip">Skip</button>
+      <button class="btn primary" id="btn-next">Next (N) →</button>
+    </div>
+    <div class="session-summary hidden" id="session-summary"></div>
+  </section>
+</main>
+
+<!-- FORMULA SIDEBAR -->
+<aside class="sidebar glass" id="sidebar">
+  <div class="sidebar-header">
+    <h3>Formula Reference</h3>
+    <button class="icon-btn" id="btn-close-sidebar">✕</button>
+  </div>
+  <div class="sidebar-toggle-row">
+    <button class="btn sm" id="btn-toggle-panel">Hide Panel (Recall)</button>
+    <button class="btn sm" id="btn-pin-trick">📌 Pin Current</button>
+  </div>
+  <div class="formula-list" id="formula-list"></div>
+</aside>
+
+<!-- TOAST + CONFETTI -->
+<div id="toast" class="toast hidden"></div>
+<canvas id="confetti"></canvas>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="app.js?v=3"></script>
+</body>
+</html>
