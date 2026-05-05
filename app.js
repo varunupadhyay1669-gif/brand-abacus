@@ -193,6 +193,12 @@ function updateAllBeadPositions() {
   recomputeValue();
 }
 
+// Visual gap each active bead leaves between its surface and the crossbar.
+// Combined with the crossbar's own thickness this gives clear "above the line /
+// below the line" separation regardless of zone height.
+const BEAD_CROSSBAR_GAP = 6;
+const CROSSBAR_THICKNESS = 3; // matches .crossbar { height:3px }
+
 function updateRodVisual(r) {
   const rodEl = $(`.rod[data-rod="${r}"]`);
   if (!rodEl) return;
@@ -200,46 +206,56 @@ function updateRodVisual(r) {
   const upperZone = rodEl.querySelector('.upper-zone');
   const lowerZone = rodEl.querySelector('.lower-zone');
 
-  // Upper bead: inactive at top, active translated down to just above the crossbar
-  // (8px gap so the bead's curved bottom doesn't visually merge with active lower beads)
+  // ---------- Heaven bead (upper) ----------
+  // Layout: upper-zone height = 34% of rod, its bottom edge sits exactly on the
+  // crossbar's top edge. Default (inactive) bead position: top = zone.padding-top.
+  // Active position: bead bottom = zoneH - GAP, so its surface is GAP px above
+  // the crossbar's top.
   const ub = upperZone.querySelector('.bead');
   if (ub) {
     ub.classList.toggle('active', s.upper);
     const zoneH = upperZone.clientHeight || 60;
-    const beadH = ub.offsetHeight || 18;
-    const y = s.upper ? (zoneH - beadH - 8) : 0;
+    const beadH = ub.offsetHeight || 22;
+    const padTop = parseFloat(getComputedStyle(upperZone).paddingTop) || 0;
+    const y = s.upper
+      ? (zoneH - beadH - BEAD_CROSSBAR_GAP - padTop)
+      : 0;
     ub.style.transform = `translateY(${y}px)`;
   }
 
-  // Lower beads: compute position per bead
+  // ---------- Earth beads (lower) ----------
   const beadH = 22; // matches CSS
   const gap = 3;
   const unit = beadH + gap;
   const lowerBeads = lowerZone.querySelectorAll('.bead');
   const activeIndices = [];
   for (let i = 0; i < 4; i++) if (s.lower[i]) activeIndices.push(i);
-  // active stack: highest-index active goes flush to crossbar (top:0), then next below
-  // bead i if active: its offset-from-top-of-zone = (rank-from-top)*unit where rank depends on which active beads are above it
-  const activeSortedDesc = [...activeIndices].sort((a,b)=>b-a); // e.g. [2,1,0]
+  // Active stack: highest-index active sits closest to the crossbar (top of zone),
+  // each subsequent active bead stacked one `unit` lower.
+  const activeSortedDesc = [...activeIndices].sort((a, b) => b - a);
   const posFromTopForActive = {};
   activeSortedDesc.forEach((idx, rank) => { posFromTopForActive[idx] = rank * unit; });
+
+  const zoneH = lowerZone.clientHeight || 180;
+  // Read the *actual* CSS padding-bottom — the previous hardcoded 10 was stale
+  // and caused active beads to land ~13px too high (overlapping the crossbar).
+  const padBottom = parseFloat(getComputedStyle(lowerZone).paddingBottom) || 0;
 
   lowerBeads.forEach(b => {
     const idx = parseInt(b.dataset.index, 10);
     const isActive = s.lower[idx];
     b.classList.toggle('active', isActive);
-    // Natural (inactive) position (from top of zone): zoneH - (idx+1)*unit - paddingBottom
-    const zoneH = lowerZone.clientHeight || 180;
-    const natTop = zoneH - (idx + 1) * unit - 10; // 10px padding-bottom area
+    // True flex-rendered top of an inactive bead at index `idx` (justify-content:
+    // flex-end + padding-bottom + gap stacking).
+    const natTop = zoneH - padBottom - beadH - unit * idx;
     let targetTop;
     if (isActive) {
-      // 8px gap below the crossbar so the topmost active lower bead doesn't merge
-      // with an active upper (heaven) bead.
-      targetTop = (posFromTopForActive[idx] ?? 0) + 8;
+      // Topmost active bead's TOP sits CROSSBAR_THICKNESS + GAP below the zone
+      // top — i.e. cleanly below the bottom edge of the crossbar.
+      targetTop = (posFromTopForActive[idx] ?? 0) + CROSSBAR_THICKNESS + BEAD_CROSSBAR_GAP;
     } else {
       targetTop = natTop;
     }
-    // We position via translateY applied to its DOM spot (DOM spot is natTop under flex-end)
     const deltaFromNat = targetTop - natTop;
     b.style.transform = `translateY(${deltaFromNat}px)`;
   });
