@@ -334,9 +334,11 @@ label > select,label > input{color:var(--text);font-size:14px;text-transform:non
 }
 .q-column{
   background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:14px;
-  padding:24px;min-height:160px;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:4px;
-  font-family:'Outfit',monospace;position:relative;overflow:hidden;
+  padding:24px;min-height:160px;max-height:60vh;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-start;gap:4px;
+  font-family:'Outfit',monospace;position:relative;
+  overflow-y:auto;overflow-x:hidden;
+  scroll-behavior:smooth;
 }
 .q-column::before{
   content:"";position:absolute;inset:0;

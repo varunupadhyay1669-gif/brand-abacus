@@ -50,6 +50,7 @@ const state = {
   dictationPaused: false,
   studentLocked: true,        // mirrors server room.state.studentLocked
   pushedQuestion: null,        // teacher-pushed free-text question
+  rowsPerQuestion: 5,          // total rows per question (1 start + N-1 operands)
 };
 
 // =============== TRICKS ===============
@@ -456,8 +457,31 @@ function highlightTrickCard(tid) {
 // =============== QUESTION ENGINE ===============
 function randInt(min, max) { return Math.floor(Math.random()*(max-min+1))+min; }
 
-// Generate a single question (sequence of +/- ops) biased to force a target trick
-function genQuestion(trickId) {
+// Pad a question's ops with safe single-digit ±ops until it has `targetRows - 1`
+// total operands (which means `targetRows` rows including the starting number).
+// "Safe" = keeps the running total inside what the abacus can display, never
+// goes negative, and uses single-digit operands (1..4 by default, ±5 occasionally).
+function safePadOps(q, targetRows) {
+  if (!targetRows || q.ops.length + 1 >= targetRows) return q;
+  const maxVal = Math.pow(10, state.rodCount) - 1;
+  let cur = q.answer;
+  let safety = 200;
+  while (q.ops.length < targetRows - 1 && safety-- > 0) {
+    const op = Math.random() < 0.55 ? '+' : '-';
+    const n = randInt(1, 4); // single-digit operand
+    const next = op === '+' ? cur + n : cur - n;
+    if (next < 0 || next > maxVal) continue; // skip if it'd over/underflow
+    q.ops.push({ op, n });
+    cur = next;
+  }
+  q.answer = cur;
+  return q;
+}
+
+// Generate a single question (sequence of +/- ops) biased to force a target trick.
+// `targetRows` (optional) extends the question with safe padding ops to reach the
+// requested total row count.
+function genQuestion(trickId, targetRows = 0) {
   const ops = [];
   let start = 0;
   let cur = 0;
@@ -529,7 +553,8 @@ function genQuestion(trickId) {
       start = randInt(1,5); cur = start;
       push('+', randInt(1,4));
   }
-  return { start, ops, answer: cur, trickId };
+  const q = { start, ops, answer: cur, trickId };
+  return safePadOps(q, targetRows);
 }
 
 function generatePractice() {
@@ -538,12 +563,14 @@ function generatePractice() {
   const trickSel = $('#sel-trick').value;
   const mode = $('#sel-mode').value;
   const count = Math.max(1, Math.min(50, +$('#inp-qcount').value || 10));
+  const rowsPerQ = Math.max(2, Math.min(50, +$('#sel-rows-per-q').value || 5));
+  state.rowsPerQuestion = rowsPerQ;
 
   const availableTricks = trickSel === 'auto' ? level.tricks : [trickSel];
   const qs = [];
   for (let i = 0; i < count; i++) {
     const tid = availableTricks[Math.floor(Math.random()*availableTricks.length)];
-    qs.push(genQuestion(tid));
+    qs.push(genQuestion(tid, rowsPerQ));
   }
   state.allQuestions = qs;
   state.currentQIndex = 0;
