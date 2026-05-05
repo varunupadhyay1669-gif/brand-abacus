@@ -512,6 +512,112 @@ body.student-mode.student-locked .bead{cursor:not-allowed}
 }
 .inline-label select{font-size:13px}
 
+/* TEACHER-CONTROLS TABS */
+.tc-tabs{
+  display:flex;gap:6px;margin:14px 0 12px;
+  border-bottom:1px solid var(--border);padding-bottom:10px;flex-wrap:wrap;
+}
+.tc-tab{
+  background:transparent;color:var(--text-dim);border:1px solid transparent;
+  padding:8px 14px;border-radius:10px;cursor:pointer;font-weight:600;font-size:13px;font-family:inherit;
+  transition:all .2s ease;
+}
+.tc-tab:hover{background:rgba(99,102,241,.08);color:var(--text)}
+.tc-tab.active{
+  background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(99,102,241,.08));
+  color:var(--accent-primary-2);border-color:rgba(99,102,241,.3);
+  box-shadow:0 4px 14px rgba(99,102,241,.15);
+}
+.tc-pane{animation:float-in .25s ease both}
+
+/* LIBRARY: category pills + cards */
+.library-cat-tabs{
+  display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;
+}
+.lib-cat-tab{
+  background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--text-dim);
+  padding:6px 12px;border-radius:999px;cursor:pointer;font-weight:600;font-size:12px;font-family:inherit;
+  transition:all .2s ease;
+}
+.lib-cat-tab:hover{border-color:var(--border-hover);color:var(--text)}
+.lib-cat-tab.active{
+  background:linear-gradient(135deg,rgba(99,102,241,.22),rgba(168,85,247,.12));
+  border-color:rgba(99,102,241,.4);color:#fff;
+  box-shadow:0 4px 14px rgba(99,102,241,.18);
+}
+.library-cat-desc{
+  font-size:12px;color:var(--text-dim);padding:6px 4px 12px;line-height:1.5;
+}
+.library-cards{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;
+}
+.lib-card{
+  background:var(--bg-panel-2);border:1px solid var(--border);border-radius:14px;
+  padding:14px 14px 12px;display:flex;flex-direction:column;gap:6px;
+  transition:all .25s ease;position:relative;
+}
+.lib-card:hover{
+  border-color:rgba(99,102,241,.4);transform:translateY(-2px);
+  box-shadow:0 12px 28px rgba(0,0,0,.35),0 0 0 1px rgba(99,102,241,.15);
+}
+.lib-card-head{display:flex;justify-content:flex-end}
+.lib-badge{
+  font-size:10px;font-weight:700;letter-spacing:.5px;
+  padding:3px 8px;border-radius:999px;
+  background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);color:var(--accent-primary-2);
+}
+.lib-title{font-family:'Outfit',sans-serif;font-weight:700;font-size:14px;line-height:1.3;color:var(--text)}
+.lib-sub{font-size:11px;color:var(--text-dim)}
+.lib-config{
+  display:flex;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--text-dim);
+  text-transform:uppercase;letter-spacing:.6px;font-weight:600;
+}
+.lib-config span{
+  background:rgba(255,255,255,.03);border:1px solid var(--border);
+  padding:2px 7px;border-radius:6px;
+}
+.lib-launch{width:100%;justify-content:center;margin-top:6px}
+
+/* PROGRESS PANEL */
+.progress-row{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px;
+}
+.prog-stat{
+  display:flex;flex-direction:column;gap:4px;
+  background:rgba(255,255,255,.03);border:1px solid var(--border);
+  padding:10px 14px;border-radius:12px;
+}
+.prog-stat-label{
+  font-size:10px;color:var(--text-dim);font-weight:600;
+  text-transform:uppercase;letter-spacing:1px;
+}
+.prog-stat span:last-child{
+  font-family:'Outfit',sans-serif;font-weight:700;font-size:18px;color:var(--text);
+}
+.progress-history{margin-top:8px}
+.prog-history-header{
+  display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;
+}
+.prog-history-header h4{font-family:'Outfit',sans-serif;font-size:14px;color:var(--accent-primary-2)}
+.prog-summary{
+  display:flex;gap:14px;flex-wrap:wrap;
+  background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(234,179,8,.05));
+  border:1px solid var(--border);border-radius:10px;padding:10px 14px;
+  font-size:12px;color:var(--text-dim);margin-bottom:10px;
+}
+.prog-summary b{color:var(--text);font-weight:700}
+.prog-history-list{
+  max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;
+}
+.prog-history-row{
+  display:grid;grid-template-columns:1.4fr 1fr .8fr .8fr;gap:8px;
+  padding:7px 12px;border-radius:8px;font-size:12px;color:var(--text-dim);
+  background:rgba(255,255,255,.02);border:1px solid var(--border);
+}
+.prog-history-row:hover{background:rgba(99,102,241,.06)}
+.ph-when{color:var(--text)}
+.ph-stat{font-family:'Outfit',monospace;text-align:center}
+
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}

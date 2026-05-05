@@ -112,6 +112,65 @@ app.get('/api/session-logs', (_req, res) => {
   }
 });
 
+// Sessions filtered by student name (case-insensitive). For the Progress panel.
+app.get('/api/sessions/by-student/:name', (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json({ ok: true, sessions: [], summary: emptySummary() });
+    const arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
+    const want = (req.params.name || '').trim().toLowerCase();
+    const sessions = arr.filter(s => (s.studentName || '').toLowerCase() === want);
+    res.json({ ok: true, sessions, summary: summarizeSessions(sessions) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'read_failed' });
+  }
+});
+
+// Sessions for a given room (one-shot: any session that ran in this room code).
+app.get('/api/sessions/by-room/:code', (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json({ ok: true, sessions: [], summary: emptySummary() });
+    const arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
+    const want = (req.params.code || '').toUpperCase();
+    const sessions = arr.filter(s => (s.roomCode || '').toUpperCase() === want);
+    res.json({ ok: true, sessions, summary: summarizeSessions(sessions) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'read_failed' });
+  }
+});
+
+function emptySummary() {
+  return { totalSessions: 0, totalQuestions: 0, totalCorrect: 0, accuracy: 0, totalTimeSec: 0, weakestTrick: null };
+}
+function summarizeSessions(sessions) {
+  if (!sessions.length) return emptySummary();
+  let q = 0, c = 0, t = 0;
+  const trickStats = {};
+  for (const s of sessions) {
+    q += (s.correctCount || 0) + (s.wrongCount || 0);
+    c += (s.correctCount || 0);
+    t += (s.totalTimeSec || 0);
+    for (const qq of (s.questions || [])) {
+      if (!qq.trickId) continue;
+      const ts = trickStats[qq.trickId] = trickStats[qq.trickId] || { c: 0, n: 0 };
+      ts.n++;
+      if (qq.correct) ts.c++;
+    }
+  }
+  let weakestTrick = null, weakAcc = 2;
+  for (const [tid, ts] of Object.entries(trickStats)) {
+    const acc = ts.n ? ts.c / ts.n : 1;
+    if (acc < weakAcc) { weakAcc = acc; weakestTrick = tid; }
+  }
+  return {
+    totalSessions: sessions.length,
+    totalQuestions: q,
+    totalCorrect: c,
+    accuracy: q ? +(c / q).toFixed(3) : 0,
+    totalTimeSec: t,
+    weakestTrick,
+  };
+}
+
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 

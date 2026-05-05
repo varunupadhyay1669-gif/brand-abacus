@@ -57,7 +57,115 @@ const state = {
   audioCtx: null,              // lazy-init Web Audio context
   pointerHideTimer: null,      // auto-fade timer for teacher-pointer overlay
   demoPlaying: false,          // re-entrancy guard for demo playback
+  studentName: '',             // optional, used to tag and look up session logs
+  activePane: 'library',       // 'library' | 'progress' | 'advanced'
+  activeLibraryCat: 'direct',
 };
+
+// =============== EXERCISE LIBRARY ===============
+// Pre-built lesson sets. Each maps to one click → loaded into the practice queue.
+const EXERCISE_CATEGORIES = [
+  { id: 'direct',       name: '➕ Direct',         desc: 'Single-digit add/subtract using lower beads or the heaven bead. Levels 1–2.' },
+  { id: 'small_friend', name: '🤝 Small Friend',  desc: '5-complement: when you can\'t add directly, use +5 minus the friend. Levels 3–4.' },
+  { id: 'big_friend',   name: '🌟 Big Friend',    desc: '10-complement: for ±6..9, borrow from the next rod. Levels 5–6.' },
+  { id: 'mix_friend',   name: '🧠 Mix Friend',    desc: 'Combine 5 and 10-complement in one motion. Level 7.' },
+  { id: 'mixed',        name: '🎲 Mixed All',     desc: 'All tricks blended. Levels 8+.' },
+  { id: 'speed',        name: '⚡ Speed Drills',  desc: 'Pace-driven drills to build automaticity.' },
+  { id: 'anzan',        name: '🧘 Anzan',         desc: 'Beads dimmed or hidden — train mental visualization.' },
+  { id: 'dictation',    name: '🎤 Dictation',     desc: 'Listen-and-compute drills with calibrated row pacing.' },
+];
+
+const EXERCISES = [
+  // -------- Direct --------
+  { id: 'd-add-warm',  cat: 'direct', title: 'Direct Add · Warmup',           sub: '5 questions · 3 rows · 3.0s pace',  badge: '🟢 Beginner',
+    config: { trick: 'direct_add', count: 5, rows: 3, mode: 'guided', pace: 3000 } },
+  { id: 'd-add-5',     cat: 'direct', title: 'Direct Add · 5 rows × 10',       sub: 'Standard L1 set',                    badge: '🟢 Beginner',
+    config: { trick: 'direct_add', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'd-add-10',    cat: 'direct', title: 'Direct Add · 10 rows × 10',      sub: 'Stamina build',                      badge: '🟡 Intermediate',
+    config: { trick: 'direct_add', count: 10, rows: 10, mode: 'guided', pace: 2000 } },
+  { id: 'd-sub-5',     cat: 'direct', title: 'Direct Subtract · 5 rows × 10',  sub: 'Standard L2 set',                    badge: '🟢 Beginner',
+    config: { trick: 'direct_sub', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'd-sub-10',    cat: 'direct', title: 'Direct Subtract · 10 rows × 10', sub: 'Stamina build',                      badge: '🟡 Intermediate',
+    config: { trick: 'direct_sub', count: 10, rows: 10, mode: 'guided', pace: 2000 } },
+  { id: 'd-mix-5',     cat: 'direct', title: 'Direct Add+Sub Mix · 5 rows',    sub: 'Both directions',                    badge: '🟢 Beginner',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'd-5beads',    cat: 'direct', title: '±5 Heaven-bead Drill',          sub: 'Just the heaven bead',                badge: '🟢 Beginner',
+    config: { tricks: ['plus5_direct', 'minus5_direct'], count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'd-recall',    cat: 'direct', title: 'Direct Recall · 5 rows',        sub: 'Sidebar hidden',                      badge: '🟠 Recall',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'recall', pace: 2500 } },
+
+  // -------- Small Friend --------
+  { id: 'sf-add-warm', cat: 'small_friend', title: 'Small Friend Add · Warmup',  sub: '5 questions · 3 rows',     badge: '🟢 Beginner',
+    config: { trick: 'small_friend_add', count: 5, rows: 3, mode: 'guided', pace: 3000 } },
+  { id: 'sf-add-5',    cat: 'small_friend', title: 'Small Friend Add · 5 rows × 10', sub: '+5 minus friend',     badge: '🟢 Beginner',
+    config: { trick: 'small_friend_add', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'sf-sub-5',    cat: 'small_friend', title: 'Small Friend Sub · 5 rows × 10', sub: '−5 plus friend',      badge: '🟢 Beginner',
+    config: { trick: 'small_friend_sub', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'sf-mix-7',    cat: 'small_friend', title: 'Small Friend Mix · 7 rows × 10', sub: 'Add + Sub combined',  badge: '🟡 Intermediate',
+    config: { tricks: ['small_friend_add', 'small_friend_sub'], count: 10, rows: 7, mode: 'guided', pace: 2000 } },
+  { id: 'sf-recall-5', cat: 'small_friend', title: 'Small Friend Recall',        sub: 'Sidebar hidden',           badge: '🟠 Recall',
+    config: { tricks: ['small_friend_add', 'small_friend_sub'], count: 10, rows: 5, mode: 'recall', pace: 2500 } },
+
+  // -------- Big Friend --------
+  { id: 'bf-add-warm', cat: 'big_friend', title: 'Big Friend Add · Warmup',     sub: '5 questions · 3 rows',     badge: '🟡 Intermediate',
+    config: { trick: 'big_friend_add', count: 5, rows: 3, mode: 'guided', pace: 3000 } },
+  { id: 'bf-add-5',    cat: 'big_friend', title: 'Big Friend Add · 5 rows × 10',  sub: '+10 minus friend',       badge: '🟡 Intermediate',
+    config: { trick: 'big_friend_add', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'bf-sub-5',    cat: 'big_friend', title: 'Big Friend Sub · 5 rows × 10',  sub: '−10 plus friend',        badge: '🟡 Intermediate',
+    config: { trick: 'big_friend_sub', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'bf-mix-7',    cat: 'big_friend', title: 'Big Friend Mix · 7 rows × 10',  sub: 'Add + Sub combined',     badge: '🟡 Intermediate',
+    config: { tricks: ['big_friend_add', 'big_friend_sub'], count: 10, rows: 7, mode: 'guided', pace: 2000 } },
+  { id: 'bf-recall-5', cat: 'big_friend', title: 'Big Friend Recall',             sub: 'Sidebar hidden',          badge: '🟠 Recall',
+    config: { tricks: ['big_friend_add', 'big_friend_sub'], count: 10, rows: 5, mode: 'recall', pace: 2500 } },
+
+  // -------- Mix Friend --------
+  { id: 'mf-warm',     cat: 'mix_friend', title: 'Mix Friend · Warmup',        sub: '5 questions · 3 rows',     badge: '🟡 Intermediate',
+    config: { trick: 'mix_friend', count: 5, rows: 3, mode: 'guided', pace: 3000 } },
+  { id: 'mf-5',        cat: 'mix_friend', title: 'Mix Friend · 5 rows × 10',    sub: 'Combined 5+10 complement', badge: '🟡 Intermediate',
+    config: { trick: 'mix_friend', count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'mf-10',       cat: 'mix_friend', title: 'Mix Friend · 10 rows × 10',   sub: 'Stamina + speed',          badge: '🟠 Advanced',
+    config: { trick: 'mix_friend', count: 10, rows: 10, mode: 'guided', pace: 2000 } },
+  { id: 'mf-recall',   cat: 'mix_friend', title: 'Mix Friend Recall',           sub: 'Sidebar hidden',           badge: '🟠 Recall',
+    config: { trick: 'mix_friend', count: 10, rows: 7, mode: 'recall', pace: 2000 } },
+
+  // -------- Mixed All --------
+  { id: 'all-5',       cat: 'mixed', title: 'All Tricks · 5 rows × 10',          sub: 'Comprehensive mix',        badge: '🟡 Intermediate',
+    config: { tricks: ALL_TRICKS_LIST(), count: 10, rows: 5, mode: 'guided', pace: 2500 } },
+  { id: 'all-10',      cat: 'mixed', title: 'All Tricks · 10 rows × 10',         sub: 'Comprehensive · stamina',  badge: '🟠 Advanced',
+    config: { tricks: ALL_TRICKS_LIST(), count: 10, rows: 10, mode: 'guided', pace: 2000 } },
+  { id: 'all-recall',  cat: 'mixed', title: 'All Tricks Recall · 7 rows',        sub: 'Sidebar hidden',           badge: '🔴 Hard',
+    config: { tricks: ALL_TRICKS_LIST(), count: 10, rows: 7, mode: 'recall', pace: 2000 } },
+
+  // -------- Speed --------
+  { id: 'speed-direct', cat: 'speed', title: 'Speed Direct · 1.0s pace',         sub: 'Build automaticity',       badge: '⚡ Speed',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'guided', pace: 1000 } },
+  { id: 'speed-friend', cat: 'speed', title: 'Speed Friend Mix · 1.0s pace',     sub: 'Small + Big',              badge: '⚡ Speed',
+    config: { tricks: ['small_friend_add', 'small_friend_sub', 'big_friend_add', 'big_friend_sub'], count: 10, rows: 5, mode: 'guided', pace: 1000 } },
+  { id: 'speed-flash',  cat: 'speed', title: 'Flash Direct · 0.7s pace',         sub: 'Recall mode',              badge: '🔥 Flash',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'recall', pace: 700 } },
+
+  // -------- Anzan --------
+  { id: 'anzan-fade',  cat: 'anzan', title: 'Anzan Fade · Direct',              sub: 'Beads at 50% opacity',     badge: '🧘 Mental',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'guided', pace: 2500, viz: 'fade50' } },
+  { id: 'anzan-ghost', cat: 'anzan', title: 'Anzan Ghost · Friend Mix',         sub: 'Beads at 20% opacity',     badge: '🧘 Mental',
+    config: { tricks: ['small_friend_add', 'small_friend_sub', 'big_friend_add', 'big_friend_sub'], count: 10, rows: 5, mode: 'guided', pace: 2500, viz: 'fade20' } },
+  { id: 'anzan-hidden', cat: 'anzan', title: 'Anzan Hidden · Direct',           sub: 'Beads invisible',          badge: '🧘 Mental',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'recall', pace: 2000, viz: 'hidden' } },
+  { id: 'anzan-flash', cat: 'anzan', title: 'Anzan Flash · 0.7s · Hidden',      sub: 'World-style flash drill',  badge: '🔥 Flash',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'recall', pace: 700, viz: 'hidden' } },
+
+  // -------- Dictation --------
+  { id: 'dict-direct-3s', cat: 'dictation', title: 'Dictation · Direct · 3.0s', sub: 'Slow, beginner-friendly',  badge: '🎤 Listen',
+    config: { tricks: ['direct_add', 'direct_sub'], count: 10, rows: 5, mode: 'guided', pace: 3000 } },
+  { id: 'dict-friend-2s', cat: 'dictation', title: 'Dictation · Friend · 2.0s', sub: 'Standard pace',            badge: '🎤 Listen',
+    config: { tricks: ['small_friend_add', 'big_friend_add'], count: 10, rows: 5, mode: 'guided', pace: 2000 } },
+  { id: 'dict-mix-1.5s',  cat: 'dictation', title: 'Dictation · Mix · 1.5s',    sub: 'Faster',                   badge: '🎤 Listen',
+    config: { tricks: ['mix_friend'], count: 10, rows: 5, mode: 'guided', pace: 1500 } },
+];
+
+function ALL_TRICKS_LIST() {
+  return ['direct_add', 'direct_sub', 'small_friend_add', 'small_friend_sub', 'big_friend_add', 'big_friend_sub', 'mix_friend'];
+}
 
 // =============== TRICKS ===============
 const TRICKS = {
@@ -697,6 +805,9 @@ function checkAnswer() {
   wl.textContent = `Why this trick? ${state.whyLine}`;
   wl.classList.remove('hidden');
 
+  // Live progress panel updates
+  if (state.activePane === 'progress') refreshProgressPanel();
+
   // Unlock mixed mode at 80% guided accuracy
   if (state.guidedAccuracy.total >= 5 &&
       state.guidedAccuracy.correct / state.guidedAccuracy.total >= 0.8) {
@@ -1258,15 +1369,21 @@ function emitSession() {
 }
 
 async function saveSessionLog() {
-  if (!state.isInRoom || state.role !== 'teacher') {
+  if (state.isInRoom && state.role !== 'teacher') {
     toast('Only the teacher can save the session log');
+    return;
+  }
+  if (!state.questionTimings.length) {
+    toast('No questions answered yet — start a practice first');
     return;
   }
   const total = state.correctCount + state.wrongCount;
   const accuracy = total ? +(state.correctCount / total).toFixed(3) : 0;
   const totalTimeSec = state.sessionStart ? Math.floor((Date.now() - state.sessionStart) / 1000) : 0;
+  const studentName = (state.studentName || $('#inp-student-name')?.value || '').trim();
   const payload = {
-    roomCode: state.roomCode,
+    roomCode: state.roomCode || 'solo',
+    studentName,
     startedAt: state.sessionStart ? new Date(state.sessionStart).toISOString() : null,
     totalTimeSec,
     score: state.score,
@@ -1310,6 +1427,198 @@ async function copyShareLink() {
     document.execCommand('copy'); document.body.removeChild(ta);
     toast(`🔗 Copied: ${url}`);
   }
+}
+
+// =============== LIBRARY UI ===============
+function renderLibraryCategoryTabs() {
+  const el = $('#library-cat-tabs');
+  if (!el) return;
+  el.innerHTML = '';
+  EXERCISE_CATEGORIES.forEach(c => {
+    const b = document.createElement('button');
+    b.className = 'lib-cat-tab' + (c.id === state.activeLibraryCat ? ' active' : '');
+    b.textContent = c.name;
+    b.dataset.cat = c.id;
+    b.addEventListener('click', () => {
+      state.activeLibraryCat = c.id;
+      renderLibraryCategoryTabs();
+      renderLibraryCards();
+    });
+    el.appendChild(b);
+  });
+  const cat = EXERCISE_CATEGORIES.find(c => c.id === state.activeLibraryCat) || EXERCISE_CATEGORIES[0];
+  $('#library-cat-desc').textContent = cat.desc;
+}
+
+function renderLibraryCards() {
+  const el = $('#library-cards');
+  if (!el) return;
+  el.innerHTML = '';
+  const items = EXERCISES.filter(e => e.cat === state.activeLibraryCat);
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state">No exercises in this category yet.</div>';
+    return;
+  }
+  items.forEach(ex => {
+    const card = document.createElement('div');
+    card.className = 'lib-card';
+    card.innerHTML = `
+      <div class="lib-card-head">
+        <span class="lib-badge">${ex.badge || ''}</span>
+      </div>
+      <div class="lib-title">${ex.title}</div>
+      <div class="lib-sub">${ex.sub || ''}</div>
+      <div class="lib-config">
+        <span>${ex.config.count}× questions</span>
+        <span>${ex.config.rows} rows</span>
+        <span>${(ex.config.pace / 1000).toFixed(1)}s pace</span>
+        ${ex.config.viz && ex.config.viz !== 'full' ? `<span>👁 ${ex.config.viz}</span>` : ''}
+      </div>
+      <button class="btn primary lib-launch">▶ Start</button>
+    `;
+    card.querySelector('.lib-launch').addEventListener('click', () => launchExercise(ex));
+    el.appendChild(card);
+  });
+}
+
+function launchExercise(ex) {
+  const cfg = ex.config || {};
+  const tricks = cfg.tricks ? cfg.tricks : (cfg.trick ? [cfg.trick] : ['direct_add']);
+  const count = Math.max(1, cfg.count || 10);
+  const rows = Math.max(2, cfg.rows || 5);
+  const mode = cfg.mode || 'guided';
+
+  // Reset session state
+  state.allQuestions = [];
+  for (let i = 0; i < count; i++) {
+    const tid = tricks[Math.floor(Math.random() * tricks.length)];
+    state.allQuestions.push(genQuestion(tid, rows));
+  }
+  state.currentQIndex = 0;
+  state.currentMode = mode;
+  state.score = 0; state.streak = 0;
+  state.correctCount = 0; state.wrongCount = 0;
+  state.assistedCount = 0;
+  state.questionTimings = [];
+  state.sessionStart = Date.now();
+  state.rowsPerQuestion = rows;
+  state.rowIntervalMs = cfg.pace || 2500;
+
+  // Reflect into Advanced selectors so the user sees what's loaded
+  if ($('#sel-rows-per-q')) $('#sel-rows-per-q').value = String(rows);
+  if ($('#sel-row-interval')) $('#sel-row-interval').value = String(state.rowIntervalMs);
+  if ($('#inp-qcount')) $('#inp-qcount').value = String(count);
+  if ($('#sel-mode')) $('#sel-mode').value = mode;
+
+  // Visibility / Anzan
+  if (cfg.viz) setVisibility(cfg.viz);
+
+  // Sidebar mode
+  if (mode === 'recall') { setSidebarOpen(false); state.trickPanelVisible = false; }
+  else { setSidebarOpen(true); state.trickPanelVisible = true; }
+
+  startTimer();
+  updatePills();
+  loadQuestion();
+  emitSession();
+  toast(`▶ ${ex.title}`);
+}
+
+// =============== TAB SWITCHING ===============
+function switchPane(name) {
+  state.activePane = name;
+  $$('#tc-tabs .tc-tab').forEach(t => t.classList.toggle('active', t.dataset.pane === name));
+  $$('.tc-pane').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== name));
+  if (name === 'progress') refreshProgressPanel();
+  if (name === 'library') { renderLibraryCategoryTabs(); renderLibraryCards(); }
+}
+
+// =============== PROGRESS PANEL ===============
+function refreshProgressPanel() {
+  // Live current-session stats
+  const total = state.correctCount + state.wrongCount;
+  $('#prog-correct').textContent = `${state.correctCount}/${total}`;
+  $('#prog-accuracy').textContent = total ? `${Math.round((state.correctCount / total) * 100)}%` : '—';
+  const avg = state.questionTimings.length
+    ? (state.questionTimings.reduce((s, t) => s + t.elapsed, 0) / state.questionTimings.length)
+    : 0;
+  $('#prog-avg').textContent = avg ? `${avg.toFixed(1)}s` : '—';
+  $('#prog-streak').textContent = state.streak;
+  $('#prog-assisted').textContent = state.assistedCount;
+
+  // Weak trick
+  const byTrick = {};
+  state.questionTimings.forEach(t => {
+    const tid = t.q.trickId;
+    byTrick[tid] = byTrick[tid] || { c: 0, n: 0 };
+    byTrick[tid].n++;
+    if (t.correct) byTrick[tid].c++;
+  });
+  let weak = null, weakAcc = 2;
+  Object.entries(byTrick).forEach(([tid, d]) => {
+    const acc = d.c / d.n;
+    if (acc < weakAcc) { weakAcc = acc; weak = tid; }
+  });
+  $('#prog-weak').textContent = weak ? TRICKS[weak].name : '—';
+
+  // Past sessions
+  fetchPastSessions();
+}
+
+async function fetchPastSessions() {
+  const el = $('#prog-history-list');
+  if (!el) return;
+  const name = (state.studentName || $('#inp-student-name')?.value || '').trim();
+  const room = state.roomCode;
+  let url;
+  if (name) url = `${backendBase()}/api/sessions/by-student/${encodeURIComponent(name)}`;
+  else if (room) url = `${backendBase()}/api/sessions/by-room/${encodeURIComponent(room)}`;
+  else { el.innerHTML = '<div class="empty-state">Enter a student name (in the room bar) to load past sessions.</div>'; return; }
+
+  try {
+    const res = await fetch(url);
+    const j = await res.json();
+    if (!j.ok || !j.sessions || !j.sessions.length) {
+      el.innerHTML = '<div class="empty-state">No saved sessions yet for this student.</div>';
+      return;
+    }
+    const sum = j.summary || {};
+    const sumHtml = `
+      <div class="prog-summary">
+        <span><b>${j.sessions.length}</b> sessions</span>
+        <span><b>${sum.totalCorrect || 0}</b>/<b>${sum.totalQuestions || 0}</b> correct</span>
+        <span>Avg accuracy: <b>${Math.round((sum.accuracy || 0) * 100)}%</b></span>
+        <span>Time: <b>${formatHMS(sum.totalTimeSec || 0)}</b></span>
+        ${sum.weakestTrick && TRICKS[sum.weakestTrick] ? `<span>⚠ Weak: <b>${TRICKS[sum.weakestTrick].name}</b></span>` : ''}
+      </div>
+    `;
+    const rows = j.sessions
+      .slice()
+      .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
+      .slice(0, 20)
+      .map(s => {
+        const acc = (s.correctCount || 0) + (s.wrongCount || 0)
+          ? Math.round(((s.correctCount || 0) / ((s.correctCount || 0) + (s.wrongCount || 0))) * 100)
+          : 0;
+        const when = s.savedAt ? new Date(s.savedAt).toLocaleString() : '—';
+        return `<div class="prog-history-row">
+          <span class="ph-when">${when}</span>
+          <span class="ph-stat">${s.correctCount || 0}/${(s.correctCount || 0) + (s.wrongCount || 0)} (${acc}%)</span>
+          <span class="ph-stat">${formatHMS(s.totalTimeSec || 0)}</span>
+          <span class="ph-stat">Room ${s.roomCode || '—'}</span>
+        </div>`;
+      }).join('');
+    el.innerHTML = sumHtml + rows;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Could not fetch sessions (backend offline?).</div>';
+  }
+}
+
+function formatHMS(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 // =============== UI WIRING ===============
@@ -1377,6 +1686,19 @@ function wireEvents() {
 
   // Sound on/off
   $('#btn-toggle-sound').addEventListener('click', () => setSoundOn(!state.soundOn));
+
+  // Pane tabs (Library / Progress / Advanced)
+  $$('#tc-tabs .tc-tab').forEach(t => {
+    t.addEventListener('click', () => switchPane(t.dataset.pane));
+  });
+
+  // Refresh past sessions on demand
+  $('#btn-refresh-history')?.addEventListener('click', refreshProgressPanel);
+
+  // Capture student name into state on input
+  $('#inp-student-name')?.addEventListener('input', (e) => {
+    state.studentName = e.target.value.trim();
+  });
 
   // Practice
   $('#btn-check').addEventListener('click', checkAnswer);
@@ -1509,6 +1831,8 @@ document.addEventListener('DOMContentLoaded', () => {
   updatePills();
   setSoundOn(true);
   setConnStatus('offline');
+  renderLibraryCategoryTabs();
+  renderLibraryCards();
   // Give layout a frame then recompute positions (zone heights now known)
   requestAnimationFrame(() => updateAllBeadPositions());
 });

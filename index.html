@@ -30,6 +30,7 @@
 <!-- ROOM BAR -->
 <section class="room-bar glass">
   <div class="room-bar-idle" id="room-bar-idle">
+    <input id="inp-student-name" class="input" placeholder="Student name (optional, for progress tracking)" />
     <button class="btn primary" id="btn-create-room">＋ Create Room</button>
     <div class="divider">or</div>
     <input id="inp-join-code" class="input" placeholder="Enter 6-char code" maxlength="6" />
@@ -75,7 +76,7 @@
 
   <!-- TEACHER CONTROLS -->
   <section class="teacher-controls glass">
-    <h3>Teacher Controls</h3>
+    <!-- Always-visible quick controls -->
     <div class="row sync-row">
       <button class="btn primary" id="btn-toggle-lock">🔓 Unlock Student</button>
       <label class="inline-label">Visibility
@@ -87,78 +88,116 @@
         </select>
       </label>
       <button class="btn sm" id="btn-demo-question" title="Animate the current question step-by-step">▶ Demo</button>
-      <span class="hint-text">Student is view-only by default. Anzan hides beads for mental math.</span>
+      <button class="btn sm" id="btn-save-log">💾 Save Session</button>
     </div>
-    <div class="row push-q-row">
-      <input class="input grow" id="inp-push-q" placeholder="Push a question to student (e.g. 7 + 5 = ?)" />
-      <button class="btn" id="btn-push-q">📤 Push to Student</button>
-      <button class="btn sm" id="btn-save-log">💾 Save Session Log</button>
+
+    <!-- Tabs -->
+    <div class="tc-tabs" id="tc-tabs">
+      <button class="tc-tab active" data-pane="library">📚 Lesson Library</button>
+      <button class="tc-tab" data-pane="progress">📊 Progress</button>
+      <button class="tc-tab" data-pane="advanced">⚙ Advanced</button>
     </div>
-    <div class="grid2">
-      <label>Level
-        <select id="sel-level"></select>
-      </label>
-      <label>Trick
-        <select id="sel-trick"></select>
-      </label>
-      <label>Mode
-        <select id="sel-mode">
-          <option value="guided">Guided (panel shown)</option>
-          <option value="recall">Recall (panel hidden)</option>
-          <option value="mixed" disabled>Mixed (locked)</option>
-        </select>
-      </label>
-      <label>Question Count
-        <input type="number" id="inp-qcount" min="1" max="50" value="10" />
-      </label>
-      <label>Rows per Question
-        <select id="sel-rows-per-q">
-          <option value="3">3 rows</option>
-          <option value="5" selected>5 rows</option>
-          <option value="7">7 rows</option>
-          <option value="10">10 rows</option>
-          <option value="15">15 rows</option>
-          <option value="20">20 rows</option>
-        </select>
-      </label>
+
+    <!-- LIBRARY PANE -->
+    <div class="tc-pane" data-pane="library" id="pane-library">
+      <div class="library-cat-tabs" id="library-cat-tabs"><!-- categories injected --></div>
+      <div class="library-cat-desc" id="library-cat-desc"></div>
+      <div class="library-cards" id="library-cards"><!-- exercise cards injected --></div>
     </div>
-    <div class="row">
-      <button class="btn primary" id="btn-generate">✨ Generate Practice</button>
-      <button class="btn" id="btn-custom-toggle">Custom Sequence</button>
+
+    <!-- PROGRESS PANE -->
+    <div class="tc-pane hidden" data-pane="progress" id="pane-progress">
+      <div class="progress-row">
+        <div class="prog-stat"><span class="prog-stat-label">Correct</span><span id="prog-correct">0/0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Accuracy</span><span id="prog-accuracy">—</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Avg time</span><span id="prog-avg">—</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Streak</span><span id="prog-streak">0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Assisted</span><span id="prog-assisted">0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Weak trick</span><span id="prog-weak">—</span></div>
+      </div>
+      <div class="progress-history">
+        <div class="prog-history-header">
+          <h4>Past sessions</h4>
+          <button class="btn sm" id="btn-refresh-history">↻ Refresh</button>
+        </div>
+        <div id="prog-history-list" class="prog-history-list">
+          <div class="empty-state">No saved sessions yet. Click 💾 Save Session after a practice run.</div>
+        </div>
+      </div>
     </div>
-    <div class="row hidden" id="custom-row">
-      <input class="input grow" id="inp-custom" placeholder="e.g. 5+3-2+7" />
-      <button class="btn" id="btn-play-custom">▶ Step</button>
-    </div>
-    <div class="row">
-      <label>Dictation
-        <select id="sel-speed">
-          <option value="0.75">0.75x</option>
-          <option value="1" selected>1x</option>
-          <option value="1.5">1.5x</option>
-          <option value="2">2x</option>
-        </select>
-      </label>
-      <label>Voice
-        <select id="sel-lang">
-          <option value="en-IN">English (IN)</option>
-          <option value="hi-IN">Hindi</option>
-        </select>
-      </label>
-      <label>Pace per row
-        <select id="sel-row-interval" title="Pause between rows (calibrated for kids)">
-          <option value="0">Auto (TTS pace)</option>
-          <option value="3000">3.0s (Level 1–2)</option>
-          <option value="2500" selected>2.5s</option>
-          <option value="2000">2.0s (Level 3–4)</option>
-          <option value="1500">1.5s</option>
-          <option value="1000">1.0s (Level 5+)</option>
-          <option value="700">0.7s (speed)</option>
-        </select>
-      </label>
-      <button class="btn sm" id="btn-dict-play">▶ Play</button>
-      <button class="btn sm" id="btn-dict-pause">⏸</button>
-      <button class="btn sm" id="btn-dict-repeat">↻ Row</button>
+
+    <!-- ADVANCED PANE (manual / custom controls) -->
+    <div class="tc-pane hidden" data-pane="advanced" id="pane-advanced">
+      <div class="row push-q-row">
+        <input class="input grow" id="inp-push-q" placeholder="Push a free-text question to student (e.g. 7 + 5 = ?)" />
+        <button class="btn" id="btn-push-q">📤 Push to Student</button>
+      </div>
+      <div class="grid2">
+        <label>Level
+          <select id="sel-level"></select>
+        </label>
+        <label>Trick
+          <select id="sel-trick"></select>
+        </label>
+        <label>Mode
+          <select id="sel-mode">
+            <option value="guided">Guided (panel shown)</option>
+            <option value="recall">Recall (panel hidden)</option>
+            <option value="mixed" disabled>Mixed (locked)</option>
+          </select>
+        </label>
+        <label>Question Count
+          <input type="number" id="inp-qcount" min="1" max="50" value="10" />
+        </label>
+        <label>Rows per Question
+          <select id="sel-rows-per-q">
+            <option value="3">3 rows</option>
+            <option value="5" selected>5 rows</option>
+            <option value="7">7 rows</option>
+            <option value="10">10 rows</option>
+            <option value="15">15 rows</option>
+            <option value="20">20 rows</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btn-generate">✨ Generate Practice</button>
+        <button class="btn" id="btn-custom-toggle">Custom Sequence</button>
+      </div>
+      <div class="row hidden" id="custom-row">
+        <input class="input grow" id="inp-custom" placeholder="e.g. 5+3-2+7" />
+        <button class="btn" id="btn-play-custom">▶ Step</button>
+      </div>
+      <div class="row">
+        <label>Dictation
+          <select id="sel-speed">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </label>
+        <label>Voice
+          <select id="sel-lang">
+            <option value="en-IN">English (IN)</option>
+            <option value="hi-IN">Hindi</option>
+          </select>
+        </label>
+        <label>Pace per row
+          <select id="sel-row-interval" title="Pause between rows (calibrated for kids)">
+            <option value="0">Auto (TTS pace)</option>
+            <option value="3000">3.0s (Level 1–2)</option>
+            <option value="2500" selected>2.5s</option>
+            <option value="2000">2.0s (Level 3–4)</option>
+            <option value="1500">1.5s</option>
+            <option value="1000">1.0s (Level 5+)</option>
+            <option value="700">0.7s (speed)</option>
+          </select>
+        </label>
+        <button class="btn sm" id="btn-dict-play">▶ Play</button>
+        <button class="btn sm" id="btn-dict-pause">⏸</button>
+        <button class="btn sm" id="btn-dict-repeat">↻ Row</button>
+      </div>
     </div>
   </section>
 
