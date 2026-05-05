@@ -51,6 +51,12 @@ const state = {
   studentLocked: true,        // mirrors server room.state.studentLocked
   pushedQuestion: null,        // teacher-pushed free-text question
   rowsPerQuestion: 5,          // total rows per question (1 start + N-1 operands)
+  visibility: 'full',          // 'full' | 'fade50' | 'fade20' | 'hidden' (Anzan)
+  soundOn: true,               // Web Audio cues
+  rowIntervalMs: 2500,         // pause between dictation rows
+  audioCtx: null,              // lazy-init Web Audio context
+  pointerHideTimer: null,      // auto-fade timer for teacher-pointer overlay
+  demoPlaying: false,          // re-entrancy guard for demo playback
 };
 
 // =============== TRICKS ===============
@@ -60,6 +66,7 @@ const TRICKS = {
     name: '+1 to +4 Direct',
     why: 'Lower beads are free, so add directly.',
     visual: '+3 → move 3 lower beads up',
+    finger: '👍 Thumb pushes lower beads UP toward the bar.',
     level: 1,
   },
   direct_sub: {
@@ -67,6 +74,7 @@ const TRICKS = {
     name: '−1 to −4 Direct',
     why: 'Lower beads are on, so minus directly.',
     visual: '−2 → move 2 lower beads down',
+    finger: '👆 Index finger pulls lower beads DOWN away from the bar.',
     level: 2,
   },
   plus5_direct: {
@@ -74,6 +82,7 @@ const TRICKS = {
     name: '+5 Use 5-bead',
     why: 'No more lower beads free — use the 5-bead.',
     visual: '+5 → drop heaven bead',
+    finger: '👆 Index finger pulls the heaven bead DOWN to the bar.',
     level: 1,
   },
   minus5_direct: {
@@ -81,6 +90,7 @@ const TRICKS = {
     name: '−5 Use 5-bead',
     why: 'Remove the 5-bead only.',
     visual: '−5 → lift heaven bead',
+    finger: '👆 Index finger pushes the heaven bead UP away from the bar.',
     level: 2,
   },
   small_friend_add: {
@@ -88,6 +98,7 @@ const TRICKS = {
     name: '+1..+4 Small Friend (5-complement)',
     why: 'No room for lower beads — use +5 then subtract the small friend.',
     visual: '+4 = +5 −1',
+    finger: '🤏 Pinch: index drops the heaven bead while index pushes lower beads down — same beat.',
     level: 3,
   },
   small_friend_sub: {
@@ -95,6 +106,7 @@ const TRICKS = {
     name: '−1..−4 Small Friend',
     why: 'Not enough lower beads — use −5 then add the small friend.',
     visual: '−4 = −5 +1',
+    finger: '🤏 Pinch: index lifts the heaven bead while thumb adds lower beads.',
     level: 4,
   },
   big_friend_add: {
@@ -102,6 +114,7 @@ const TRICKS = {
     name: '+6..+9 Big Friend (10-complement)',
     why: 'For +9, do +10 −1 because 9 is near 10.',
     visual: '+9 = +10 −1',
+    finger: '👍👆 Thumb adds 1 on the next rod (+10), index removes from this rod.',
     level: 5,
   },
   big_friend_sub: {
@@ -109,6 +122,7 @@ const TRICKS = {
     name: '−6..−9 Big Friend',
     why: 'For −9, do −10 +1 — borrow from the next rod.',
     visual: '−9 = −10 +1',
+    finger: '👆👍 Index removes 1 on the next rod (−10), thumb adds on this rod.',
     level: 6,
   },
   mix_friend: {
@@ -116,6 +130,7 @@ const TRICKS = {
     name: 'Mix Friend (combined 5+10 complement)',
     why: 'When small friend fails, combine with 10-complement.',
     visual: '+7 on 4 = +10 −3',
+    finger: '👍👆 Thumb adds on next rod, index does small-friend on this rod — one motion.',
     level: 7,
   },
 };
@@ -379,13 +394,23 @@ function attachBeadPointer(bead) {
     bead.classList.remove('bead-dragging');
     if (!dragged) applyTap(bead);
     pointerId = null;
+    soundBeadClick();
     emitBeadSync();
+  };
+
+  // Teachers broadcast a "finger" pointer when they touch a bead so the student
+  // sees which rod the teacher is interacting with (mimics pointing in person).
+  const onEnter = () => {
+    if (state.role === 'teacher' && state.isInRoom) {
+      emitTeacherPointer(+bead.dataset.rod, bead.dataset.zone);
+    }
   };
 
   bead.addEventListener('pointerdown', onDown);
   bead.addEventListener('pointermove', onMove);
   bead.addEventListener('pointerup', onUp);
   bead.addEventListener('pointercancel', onUp);
+  bead.addEventListener('pointerenter', onEnter);
 }
 
 function applyTap(bead) {
@@ -445,6 +470,7 @@ function renderFormulaSidebar() {
       <h4>${t.name}</h4>
       <p>${t.why}</p>
       <div class="mini-visual">${t.visual}</div>
+      ${t.finger ? `<div class="finger-rule"><span class="finger-icon">✋</span><span>${t.finger}</span></div>` : ''}
     `;
     list.appendChild(card);
   });
@@ -657,9 +683,11 @@ function checkAnswer() {
     state.score += 10; state.streak += 1; state.correctCount += 1;
     if (state.currentMode === 'guided') state.guidedAccuracy.correct++;
     confetti();
+    soundCorrect();
     toast('✓ Correct!');
   } else {
     state.streak = 0; state.wrongCount += 1;
+    soundWrong();
     toast(`✗ Expected ${state.expectedAnswer}`);
   }
   if (state.currentMode === 'guided') state.guidedAccuracy.total++;
@@ -772,11 +800,16 @@ async function playDictation(startIdx = 0) {
   state.dictationPaused = false;
   const seq = [q.start.toString(), ...q.ops.map(o => (o.op === '+' ? 'plus ' : 'minus ') + o.n)];
   state.dictationQueue = seq;
+  const interRow = Math.max(0, +state.rowIntervalMs || 0);
   for (let i = startIdx; i < seq.length; i++) {
-    if (state.dictationPaused) { state.dictationIdx = i; return; }
+    if (state.dictationPaused) { state.dictationIdx = i; clearDictRowHighlight(); return; }
     state.dictationIdx = i;
+    highlightDictRow(i);
     await speakText(seq[i], state.dictationLang, state.dictationSpeed);
+    // Calibrated pause between rows so kids have time to move beads
+    if (interRow && i < seq.length - 1) await sleep(interRow);
   }
+  clearDictRowHighlight();
 }
 function pauseDictation() { state.dictationPaused = true; try{speechSynthesis.cancel();}catch(_){} }
 function repeatRow() {
@@ -841,6 +874,155 @@ function setSidebarOpen(open) {
   state.trickPanelVisible = open;
 }
 
+// =============== SOUND CUES (Web Audio synth — no asset files) ===============
+function ensureAudio() {
+  if (state.audioCtx) return state.audioCtx;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    state.audioCtx = new Ctx();
+  } catch (_) { state.audioCtx = null; }
+  return state.audioCtx;
+}
+function playTone({ freq = 880, durMs = 60, type = 'sine', gain = 0.07, glide = 0 } = {}) {
+  if (!state.soundOn) return;
+  const ctx = ensureAudio(); if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  if (glide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, freq + glide), t0 + durMs / 1000);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(gain, t0 + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + durMs / 1000);
+  osc.connect(g).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + durMs / 1000 + 0.02);
+}
+function soundBeadClick() { playTone({ freq: 1200, durMs: 35, type: 'triangle', gain: 0.05 }); }
+function soundCorrect()  { playTone({ freq: 880, durMs: 110, type: 'sine', gain: 0.09 });
+  setTimeout(() => playTone({ freq: 1320, durMs: 140, type: 'sine', gain: 0.09 }), 90); }
+function soundWrong()    { playTone({ freq: 220, durMs: 240, type: 'square', gain: 0.06, glide: -120 }); }
+function soundDemoStep() { playTone({ freq: 660, durMs: 50, type: 'triangle', gain: 0.05 }); }
+
+function setSoundOn(on) {
+  state.soundOn = !!on;
+  const btn = $('#btn-toggle-sound');
+  if (btn) btn.textContent = state.soundOn ? '🔊' : '🔇';
+  if (state.soundOn) ensureAudio(); // some browsers need this to start the context
+}
+
+// =============== TEACHER POINTER OVERLAY (the "wall abacus" finger) ===============
+function showTeacherPointer(rod, zone) {
+  const overlay = $('#teacher-pointer');
+  const rodEl = $(`.rod[data-rod="${rod}"]`);
+  const frame = $('#abacus-frame');
+  if (!overlay || !rodEl || !frame) return;
+  const fr = frame.getBoundingClientRect();
+  const rr = rodEl.getBoundingClientRect();
+  const x = rr.left - fr.left + rr.width / 2;
+  // Default: centered between zones (at the crossbar). Bias up/down by zone.
+  let y = rr.top - fr.top + rr.height * 0.34;
+  if (zone === 'upper') y = rr.top - fr.top + rr.height * 0.18;
+  else if (zone === 'lower') y = rr.top - fr.top + rr.height * 0.62;
+  overlay.style.left = `${x}px`;
+  overlay.style.top = `${y}px`;
+  overlay.classList.remove('hidden');
+  clearTimeout(state.pointerHideTimer);
+  state.pointerHideTimer = setTimeout(() => overlay.classList.add('hidden'), 1800);
+}
+
+let lastPointerEmitAt = 0;
+function emitTeacherPointer(rod, zone) {
+  if (state.role !== 'teacher' || !state.isInRoom || !state.socket) return;
+  const now = Date.now();
+  if (now - lastPointerEmitAt < 60) return; // throttle ~16 Hz
+  lastPointerEmitAt = now;
+  state.socket.emit('teacher-pointer', { rod, zone });
+}
+
+// =============== ANZAN / GHOST-BEAD VISIBILITY ===============
+function applyVisibility(viz) {
+  state.visibility = viz || 'full';
+  const frame = $('#abacus-frame');
+  if (!frame) return;
+  frame.classList.remove('viz-fade50', 'viz-fade20', 'viz-hidden');
+  if (state.visibility === 'fade50') frame.classList.add('viz-fade50');
+  else if (state.visibility === 'fade20') frame.classList.add('viz-fade20');
+  else if (state.visibility === 'hidden') frame.classList.add('viz-hidden');
+  const sel = $('#sel-visibility'); if (sel) sel.value = state.visibility;
+}
+
+function setVisibility(viz) {
+  applyVisibility(viz);
+  if (state.role === 'teacher' && state.isInRoom && state.socket) {
+    state.socket.emit('set-visibility', { visibility: viz });
+  }
+}
+
+// =============== DEMO REPLAY (animated solution playback) ===============
+async function playDemoForCurrentQuestion() {
+  if (state.demoPlaying) return;
+  // Students (in a room) shouldn't play demo authoritatively — they ask the
+  // teacher via request-demo. Outside a room, anyone can self-demo.
+  if (state.isInRoom && state.role === 'student') {
+    toast('Asking teacher to demo'); return;
+  }
+  const q = state.allQuestions[state.currentQIndex];
+  if (!q) { toast('No question loaded to demo'); return; }
+  state.demoPlaying = true;
+  const broadcast = state.isInRoom && state.role === 'teacher' && state.socket;
+  try {
+    // Step 0: set abacus to start value (animated by CSS transition)
+    state.beadsState = beadsStateFromNumber(q.start, state.rodCount);
+    updateAllBeadPositions();
+    soundDemoStep();
+    if (broadcast) state.socket.emit('demo-step', { rodCount: state.rodCount, beadsState: state.beadsState, label: `Start: ${q.start}` });
+    highlightDictRow(0);
+    await sleep(900);
+    let cur = q.start;
+    for (let i = 0; i < q.ops.length; i++) {
+      const o = q.ops[i];
+      cur = o.op === '+' ? cur + o.n : cur - o.n;
+      state.beadsState = beadsStateFromNumber(cur, state.rodCount);
+      updateAllBeadPositions();
+      soundDemoStep();
+      if (broadcast) state.socket.emit('demo-step', { rodCount: state.rodCount, beadsState: state.beadsState, label: `${o.op}${o.n}` });
+      highlightDictRow(i + 1);
+      await sleep(900);
+    }
+    toast(`Demo complete → ${q.answer}`);
+  } finally {
+    state.demoPlaying = false;
+    setTimeout(() => clearDictRowHighlight(), 1500);
+  }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// =============== DICTATION ROW HIGHLIGHT ===============
+function highlightDictRow(idx) {
+  clearDictRowHighlight();
+  const rows = $$('#q-column .q-num');
+  if (rows[idx]) {
+    rows[idx].classList.add('dict-active');
+    rows[idx].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+function clearDictRowHighlight() {
+  $$('#q-column .q-num.dict-active').forEach(el => el.classList.remove('dict-active'));
+}
+
+// =============== CONNECTION STATUS ===============
+function setConnStatus(state_) {
+  const pill = $('#conn-pill');
+  if (!pill) return;
+  pill.classList.remove('conn-online', 'conn-reconnecting', 'conn-offline');
+  if (state_ === 'online')        { pill.classList.add('conn-online');        pill.textContent = '🟢 Live'; }
+  else if (state_ === 'reconnecting') { pill.classList.add('conn-reconnecting'); pill.textContent = '🟡 Reconnecting'; }
+  else                            { pill.classList.add('conn-offline');       pill.textContent = '⚪ Offline'; }
+}
+
 // =============== SOCKET.IO ===============
 function backendBase() {
   const proto = window.location.protocol;
@@ -864,16 +1046,23 @@ function initSocket() {
   }
   const s = state.socket;
 
-  s.on('connect', () => console.log('socket connected', s.id));
-  s.on('disconnect', () => console.log('socket disconnected'));
+  s.on('connect', () => { console.log('socket connected', s.id); setConnStatus('online'); });
+  s.on('disconnect', () => { console.log('socket disconnected'); setConnStatus(state.isInRoom ? 'reconnecting' : 'offline'); });
+  s.on('connect_error', () => setConnStatus('reconnecting'));
+  s.on('reconnect', () => setConnStatus('online'));
 
   s.on('bead-update', (data) => {
     if (!data) return;
     state.suppressRemoteUpdate = true;
-    state.rodCount = data.rodCount || state.rodCount;
-    state.beadsState = data.beadsState || state.beadsState;
+    // CRITICAL: only rebuild the DOM if rodCount changed. Otherwise just update
+    // bead positions so the CSS transition animates the move (mimics watching
+    // the teacher's hand move the bead across the rod).
+    const rodCountChanged = data.rodCount && data.rodCount !== state.rodCount;
+    if (data.rodCount) state.rodCount = data.rodCount;
+    if (data.beadsState) state.beadsState = data.beadsState;
     $('#sel-rod-count').value = state.rodCount;
-    renderAbacus();
+    if (rodCountChanged) renderAbacus();
+    else updateAllBeadPositions();
     state.suppressRemoteUpdate = false;
   });
   s.on('rod-change', (data) => {
@@ -911,10 +1100,12 @@ function initSocket() {
   s.on('set-value', (data) => {
     if (!data) return;
     state.suppressRemoteUpdate = true;
-    state.rodCount = data.rodCount || state.rodCount;
-    state.beadsState = data.beadsState || state.beadsState;
+    const rodCountChanged = data.rodCount && data.rodCount !== state.rodCount;
+    if (data.rodCount) state.rodCount = data.rodCount;
+    if (data.beadsState) state.beadsState = data.beadsState;
     $('#sel-rod-count').value = state.rodCount;
-    renderAbacus();
+    if (rodCountChanged) renderAbacus();
+    else updateAllBeadPositions(); // smooth animated transition, not a teleport
     state.suppressRemoteUpdate = false;
     if (typeof data.value === 'number') toast(`Teacher set value → ${data.value.toLocaleString()}`);
   });
@@ -928,6 +1119,38 @@ function initSocket() {
     if (state.role !== 'teacher') return;
     const ok = data && data.correct;
     toast(`👤 Student answered ${data.value}: ${ok ? '✓ correct' : '✗ wrong'}`);
+  });
+
+  // Teacher's "finger" position relayed to the student
+  s.on('teacher-pointer', ({ rod, zone } = {}) => {
+    if (state.role === 'teacher') return; // teacher doesn't render their own pointer
+    if (typeof rod !== 'number') return;
+    showTeacherPointer(rod, zone);
+  });
+
+  // Anzan / ghost-bead mode set by teacher
+  s.on('set-visibility', ({ visibility } = {}) => {
+    applyVisibility(visibility);
+    if (visibility !== 'full') toast(`👁 Visibility: ${visibility}`);
+  });
+
+  // Student → teacher: "I'm stuck, show me"
+  s.on('request-demo', () => {
+    if (state.role !== 'teacher') return;
+    toast('🆘 Student requests a demo — click ▶ Demo to play');
+    soundDemoStep();
+  });
+
+  // Demo step broadcast: animate to the new bead state (student side)
+  s.on('demo-step', (data) => {
+    if (!data || !data.beadsState) return;
+    state.suppressRemoteUpdate = true;
+    if (data.rodCount) state.rodCount = data.rodCount;
+    state.beadsState = data.beadsState;
+    updateAllBeadPositions();
+    state.suppressRemoteUpdate = false;
+    soundDemoStep();
+    if (data.label) toast(`Demo: ${data.label}`);
   });
 }
 
@@ -988,6 +1211,7 @@ function joinRoom(code) {
       }
       state.studentLocked = resp.state.studentLocked !== false; // default locked
       state.pushedQuestion = resp.state.currentQuestion || null;
+      applyVisibility(resp.state.visibility || 'full');
       renderLockState();
       renderPushedQuestion();
     }
@@ -1140,9 +1364,19 @@ function wireEvents() {
   });
   $('#sel-speed').addEventListener('change', e => state.dictationSpeed = +e.target.value);
   $('#sel-lang').addEventListener('change', e => state.dictationLang = e.target.value);
+  $('#sel-row-interval').addEventListener('change', e => state.rowIntervalMs = +e.target.value || 0);
   $('#btn-dict-play').addEventListener('click', () => playDictation(0));
   $('#btn-dict-pause').addEventListener('click', pauseDictation);
   $('#btn-dict-repeat').addEventListener('click', repeatRow);
+
+  // Anzan / ghost-bead visibility (teacher controls; broadcasts to student)
+  $('#sel-visibility').addEventListener('change', (e) => setVisibility(e.target.value));
+
+  // Demo — teacher animates the current question's solution
+  $('#btn-demo-question').addEventListener('click', playDemoForCurrentQuestion);
+
+  // Sound on/off
+  $('#btn-toggle-sound').addEventListener('click', () => setSoundOn(!state.soundOn));
 
   // Practice
   $('#btn-check').addEventListener('click', checkAnswer);
@@ -1158,6 +1392,17 @@ function wireEvents() {
     setSidebarOpen(true);
     if (state.currentTrickId) highlightTrickCard(state.currentTrickId);
     toast('Showing panel (tagged: Assisted)');
+  });
+
+  // "Show Me" — student asks teacher for a demo, or self-plays solo.
+  $('#btn-show-me').addEventListener('click', () => {
+    if (state.role === 'student' && state.isInRoom && state.socket) {
+      state.socket.emit('request-demo', {});
+      toast('Asked teacher to demo');
+      return;
+    }
+    // Solo (no room or teacher) → animate locally
+    playDemoForCurrentQuestion();
   });
   $('#inp-answer').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') checkAnswer();
@@ -1262,6 +1507,8 @@ document.addEventListener('DOMContentLoaded', () => {
   populateSelectors();
   wireEvents();
   updatePills();
+  setSoundOn(true);
+  setConnStatus('offline');
   // Give layout a frame then recompute positions (zone heights now known)
   requestAnimationFrame(() => updateAllBeadPositions());
 });

@@ -28,6 +28,7 @@ function defaultState() {
     beadsState: [],
     studentLocked: true, // students start in view-only mode
     currentQuestion: null,
+    visibility: 'full', // 'full' | 'fade50' | 'fade20' | 'hidden' (Anzan / mental-abacus mode)
   };
 }
 
@@ -275,6 +276,47 @@ io.on('connection', (socket) => {
       touch(joinedCode);
       socket.to(joinedCode).emit(ev, data);
     });
+  });
+
+  // ---- Teacher → Student: pointer/finger position (the "wall abacus" effect) ----
+  socket.on('teacher-pointer', (data) => {
+    if (!isTeacher()) return;
+    if (!joinedCode) return;
+    touch(joinedCode);
+    socket.to(joinedCode).emit('teacher-pointer', data || {});
+  });
+
+  // ---- Anzan / bead visibility mode (teacher-authoritative) ----
+  socket.on('set-visibility', ({ visibility } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    const allowed = ['full', 'fade50', 'fade20', 'hidden'];
+    if (!allowed.includes(visibility)) return ack(cb, { ok: false, error: 'bad_visibility' });
+    r.state.visibility = visibility;
+    touch(joinedCode);
+    io.to(joinedCode).emit('set-visibility', { visibility });
+    ack(cb, { ok: true, visibility });
+  });
+
+  // ---- Student → Teacher: "I'm stuck, show me" ----
+  socket.on('request-demo', (data, cb) => {
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (r.teacherId) io.to(r.teacherId).emit('request-demo', { ...(data || {}), fromId: socket.id });
+    touch(joinedCode);
+    ack(cb, { ok: true });
+  });
+
+  // ---- Demo replay: teacher steps through ops; each step broadcasts beads to all ----
+  socket.on('demo-step', (data, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (data && data.beadsState) {
+      r.state.beadsState = data.beadsState;
+      r.state.rodCount = data.rodCount || r.state.rodCount;
+    }
+    touch(joinedCode);
+    io.to(joinedCode).emit('demo-step', data || {});
+    ack(cb, { ok: true });
   });
 });
 

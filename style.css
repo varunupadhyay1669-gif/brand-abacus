@@ -450,6 +450,68 @@ body.student-mode.student-locked .bead{cursor:not-allowed}
 .pushed-q-label{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent-primary-2);font-weight:700}
 .pushed-q-text{font-family:'Outfit',monospace;font-size:24px;font-weight:700;color:var(--text)}
 
+/* CONNECTION STATUS PILL */
+.conn-pill{
+  padding:5px 12px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.4px;
+  border:1px solid var(--border);background:rgba(255,255,255,.04);transition:all .25s ease;
+}
+.conn-pill.conn-online{background:rgba(74,222,128,.1);border-color:rgba(74,222,128,.3);color:#86efac}
+.conn-pill.conn-reconnecting{background:rgba(234,179,8,.1);border-color:rgba(234,179,8,.3);color:#fde68a;animation:pulse-glow 1.5s ease-in-out infinite}
+.conn-pill.conn-offline{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.25);color:#fca5a5}
+
+/* TEACHER POINTER OVERLAY (the "wall abacus" finger) */
+.teacher-pointer{
+  position:absolute;width:64px;height:64px;border-radius:50%;
+  background:radial-gradient(circle,rgba(253,224,71,.55) 0%,rgba(234,179,8,.25) 40%,transparent 70%);
+  border:2px solid rgba(253,230,138,.7);
+  pointer-events:none;z-index:8;
+  transform:translate(-50%,-50%);
+  box-shadow:0 0 24px rgba(253,224,71,.7),0 0 60px rgba(234,179,8,.35);
+  animation:teacher-pointer-pulse 1.4s ease-in-out infinite;
+}
+.teacher-pointer::after{
+  content:"👆";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:26px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.6));
+}
+@keyframes teacher-pointer-pulse{
+  0%,100%{box-shadow:0 0 24px rgba(253,224,71,.7),0 0 60px rgba(234,179,8,.35);transform:translate(-50%,-50%) scale(1)}
+  50%{box-shadow:0 0 32px rgba(253,224,71,.95),0 0 80px rgba(234,179,8,.5);transform:translate(-50%,-50%) scale(1.08)}
+}
+
+/* ANZAN / GHOST MODE — fade beads to train mental visualization */
+.abacus-frame.viz-fade50 .bead{opacity:.45;transition:opacity .4s ease}
+.abacus-frame.viz-fade20 .bead{opacity:.18;transition:opacity .4s ease}
+.abacus-frame.viz-hidden .bead{opacity:0;transition:opacity .4s ease}
+.abacus-frame.viz-hidden .rod-stick,
+.abacus-frame.viz-hidden .crossbar{opacity:.25;transition:opacity .4s ease}
+
+/* CURRENT-ROW HIGHLIGHT during dictation */
+.q-column .q-num.dict-active{
+  color:var(--accent-gold-2);
+  text-shadow:0 0 18px rgba(253,224,71,.6);
+  transform:scale(1.08);
+  transition:transform .25s cubic-bezier(.34,1.56,.64,1),color .2s,text-shadow .2s;
+}
+
+/* TWO-FINGER HINT ICON inside formula card */
+.finger-rule{
+  margin-top:6px;display:flex;gap:8px;align-items:center;
+  font-size:12px;color:var(--text-dim);font-weight:600;
+}
+.finger-rule .finger-icon{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:8px;
+  background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.25);
+  font-size:14px;
+}
+
+/* INLINE LABEL (compact label that doesn't break the row) */
+.inline-label{
+  display:inline-flex;flex-direction:row;align-items:center;gap:8px;
+  text-transform:none;letter-spacing:0;font-size:12px;color:var(--text-dim);font-weight:600;
+}
+.inline-label select{font-size:13px}
+
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}

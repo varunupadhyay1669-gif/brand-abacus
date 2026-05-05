@@ -21,6 +21,8 @@
     <div class="pill"><span class="pill-label">Score</span><span id="pill-score">0</span></div>
     <div class="pill"><span class="pill-label">Streak</span><span id="pill-streak">0</span></div>
     <div class="pill"><span class="pill-label">Time</span><span id="pill-timer">00:00</span></div>
+    <button id="btn-toggle-sound" class="icon-btn" title="Toggle sound">🔊</button>
+    <span id="conn-pill" class="conn-pill conn-offline" title="Connection status">⚪ Offline</span>
     <button id="btn-open-sidebar" class="icon-btn" title="Formula Reference (F)">📘</button>
   </div>
 </header>
@@ -67,6 +69,7 @@
     </div>
     <div class="abacus-frame" id="abacus-frame">
       <!-- Rods injected by JS -->
+      <div id="teacher-pointer" class="teacher-pointer hidden"></div>
     </div>
   </section>
 
@@ -75,7 +78,16 @@
     <h3>Teacher Controls</h3>
     <div class="row sync-row">
       <button class="btn primary" id="btn-toggle-lock">🔓 Unlock Student</button>
-      <span class="hint-text">Student is in view-only mode by default. Unlock to let them move beads.</span>
+      <label class="inline-label">Visibility
+        <select id="sel-visibility" title="Anzan / ghost-bead mode for mental-math practice">
+          <option value="full" selected>Full</option>
+          <option value="fade50">Faded (50%)</option>
+          <option value="fade20">Ghost (20%)</option>
+          <option value="hidden">Anzan (hidden)</option>
+        </select>
+      </label>
+      <button class="btn sm" id="btn-demo-question" title="Animate the current question step-by-step">▶ Demo</button>
+      <span class="hint-text">Student is view-only by default. Anzan hides beads for mental math.</span>
     </div>
     <div class="row push-q-row">
       <input class="input grow" id="inp-push-q" placeholder="Push a question to student (e.g. 7 + 5 = ?)" />
@@ -133,6 +145,17 @@
           <option value="hi-IN">Hindi</option>
         </select>
       </label>
+      <label>Pace per row
+        <select id="sel-row-interval" title="Pause between rows (calibrated for kids)">
+          <option value="0">Auto (TTS pace)</option>
+          <option value="3000">3.0s (Level 1–2)</option>
+          <option value="2500" selected>2.5s</option>
+          <option value="2000">2.0s (Level 3–4)</option>
+          <option value="1500">1.5s</option>
+          <option value="1000">1.0s (Level 5+)</option>
+          <option value="700">0.7s (speed)</option>
+        </select>
+      </label>
       <button class="btn sm" id="btn-dict-play">▶ Play</button>
       <button class="btn sm" id="btn-dict-pause">⏸</button>
       <button class="btn sm" id="btn-dict-repeat">↻ Row</button>
@@ -160,6 +183,7 @@
     <div class="row">
       <button class="btn" id="btn-hint">💡 Show Hint (H)</button>
       <button class="btn" id="btn-stuck">🆘 I'm Stuck</button>
+      <button class="btn" id="btn-show-me">👀 Show Me</button>
       <button class="btn" id="btn-skip">Skip</button>
       <button class="btn primary" id="btn-next">Next (N) →</button>
     </div>
