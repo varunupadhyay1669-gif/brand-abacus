@@ -200,13 +200,14 @@ function updateRodVisual(r) {
   const upperZone = rodEl.querySelector('.upper-zone');
   const lowerZone = rodEl.querySelector('.lower-zone');
 
-  // Upper bead: inactive at top, active translated down to crossbar
+  // Upper bead: inactive at top, active translated down to just above the crossbar
+  // (8px gap so the bead's curved bottom doesn't visually merge with active lower beads)
   const ub = upperZone.querySelector('.bead');
   if (ub) {
     ub.classList.toggle('active', s.upper);
     const zoneH = upperZone.clientHeight || 60;
     const beadH = ub.offsetHeight || 18;
-    const y = s.upper ? (zoneH - beadH - 2) : 0;
+    const y = s.upper ? (zoneH - beadH - 8) : 0;
     ub.style.transform = `translateY(${y}px)`;
   }
 
@@ -232,7 +233,9 @@ function updateRodVisual(r) {
     const natTop = zoneH - (idx + 1) * unit - 10; // 10px padding-bottom area
     let targetTop;
     if (isActive) {
-      targetTop = (posFromTopForActive[idx] ?? 0) + 2;
+      // 8px gap below the crossbar so the topmost active lower bead doesn't merge
+      // with an active upper (heaven) bead.
+      targetTop = (posFromTopForActive[idx] ?? 0) + 8;
     } else {
       targetTop = natTop;
     }

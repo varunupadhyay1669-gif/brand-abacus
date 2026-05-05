@@ -143,6 +143,20 @@ select,input[type="number"]{
   transition:all .2s ease;
 }
 select:focus,input[type="number"]:focus{border-color:var(--accent-primary);outline:none;box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+/* Force dark dropdown popup so options aren't white-on-white */
+select option{
+  background:#0d1530;
+  color:#eef2ff;
+  padding:8px 12px;
+}
+select option:checked,
+select option:hover{
+  background:#1e2a55;
+  color:#fff;
+}
+select option:disabled{
+  color:#6b75a0;
+}
 label{color:var(--text-dim);font-size:11px;display:flex;flex-direction:column;gap:6px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
 label > select,label > input{color:var(--text);font-size:14px;text-transform:none;letter-spacing:0}
 
@@ -227,12 +241,16 @@ label > select,label > input{color:var(--text);font-size:14px;text-transform:non
   background:linear-gradient(180deg,rgba(165,180,252,.55),rgba(99,102,241,.25) 50%,rgba(165,180,252,.55));
   box-shadow:0 0 4px rgba(99,102,241,.55),0 0 12px rgba(99,102,241,.18);
 }
-/* Slim neon crossbar with golden glow */
+/* Slim neon crossbar with golden glow + halo channel */
 .crossbar{
   position:absolute;left:-6px;right:-6px;top:34%;
-  height:2px;border-radius:2px;
+  height:3px;border-radius:3px;
   background:linear-gradient(90deg,transparent,#fde68a,#eab308,#fde68a,transparent);
-  box-shadow:0 0 12px rgba(234,179,8,.55),0 0 4px rgba(253,230,138,.85);
+  box-shadow:
+    0 0 14px rgba(234,179,8,.6),
+    0 0 4px rgba(253,230,138,.9),
+    0 -8px 16px -4px rgba(234,179,8,.18),
+    0 8px 16px -4px rgba(234,179,8,.18);
   z-index:3;
 }
 /* Modern label pill */
