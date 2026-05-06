@@ -57,6 +57,12 @@ function defaultState() {
     studentLocked: true, // students start in view-only mode
     currentQuestion: null,
     visibility: 'full', // 'full' | 'fade50' | 'fade20' | 'hidden' (Anzan / mental-abacus mode)
+    // MIRROR MODE — when true, teacher and student each have an independent
+    // abacus side-by-side. Off by default; the existing single-abacus flow
+    // continues to use beadsState as the shared source of truth.
+    mirrorMode: false,
+    teacherBeads: [],
+    studentBeads: [],
   };
 }
 
@@ -455,6 +461,52 @@ io.on('connection', (socket) => {
     touch(joinedCode);
     io.to(joinedCode).emit('set-visibility', { visibility });
     ack(cb, { ok: true, visibility });
+  });
+
+  // ---- MIRROR MODE: dual independent abacuses (teacher-authoritative) ----
+  // When ON, both sides keep their own beadsState. When OFF, the teacher's
+  // last-known state becomes the new shared beadsState (single source of
+  // truth restored).
+  socket.on('set-mirror-mode', ({ on } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    const wasOn = !!r.state.mirrorMode;
+    r.state.mirrorMode = !!on;
+    if (on && !wasOn) {
+      // Seed both sides from the current shared state so beads don't pop
+      r.state.teacherBeads = JSON.parse(JSON.stringify(r.state.beadsState || []));
+      r.state.studentBeads = JSON.parse(JSON.stringify(r.state.beadsState || []));
+    } else if (!on && wasOn) {
+      // Returning to single-abacus: teacher's state wins (authority)
+      r.state.beadsState = JSON.parse(JSON.stringify(r.state.teacherBeads || r.state.beadsState));
+    }
+    touch(joinedCode);
+    io.to(joinedCode).emit('set-mirror-mode', {
+      on: r.state.mirrorMode,
+      rodCount: r.state.rodCount,
+      teacherBeads: r.state.teacherBeads,
+      studentBeads: r.state.studentBeads,
+      beadsState: r.state.beadsState,
+    });
+    ack(cb, { ok: true, on: r.state.mirrorMode });
+  });
+
+  socket.on('mirror-bead-update', (data, cb) => {
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (!r.state.mirrorMode) return ack(cb, { ok: false, error: 'not_mirror' });
+    if (data && Array.isArray(data.beadsState) && data.beadsState.length > MAX_BEADS_PER_UPDATE) {
+      return ack(cb, { ok: false, error: 'too_many_rods' });
+    }
+    const isT = isTeacher();
+    if (isT) r.state.teacherBeads = (data && data.beadsState) || r.state.teacherBeads;
+    else     r.state.studentBeads = (data && data.beadsState) || r.state.studentBeads;
+    touch(joinedCode);
+    socket.to(joinedCode).emit('mirror-bead-update', {
+      side: isT ? 'teacher' : 'student',
+      beadsState: data && data.beadsState,
+      rodCount: r.state.rodCount,
+    });
+    ack(cb, { ok: true });
   });
 
   // ---- Student → Teacher: "I'm stuck, show me" ----

@@ -66,11 +66,28 @@
         <input id="inp-set-value" class="input sm-input" type="number" min="0" placeholder="Set to…" />
         <button class="btn sm" id="btn-set-value">Set</button>
       </div>
-      <div class="value-display"><span class="vd-label">VALUE</span><span id="abacus-value">0</span></div>
+      <div class="abacus-header-right">
+        <span id="match-indicator" class="match-indicator hidden">⏳</span>
+        <div class="value-display"><span class="vd-label">VALUE</span><span id="abacus-value">0</span></div>
+      </div>
     </div>
-    <div class="abacus-frame" id="abacus-frame">
-      <!-- Rods injected by JS -->
-      <div id="teacher-pointer" class="teacher-pointer hidden"></div>
+    <div class="abacus-stack" id="abacus-stack">
+      <!-- Main abacus — yours (interactive) -->
+      <div class="abacus-pane" id="abacus-pane-main">
+        <div class="abacus-pane-label hidden" id="abacus-label-main"></div>
+        <div class="abacus-frame" id="abacus-frame">
+          <!-- Rods injected by JS -->
+          <div id="teacher-pointer" class="teacher-pointer hidden"></div>
+        </div>
+      </div>
+      <!-- Mirror abacus — the other person's (read-only). Only shown in mirror mode. -->
+      <div class="abacus-pane abacus-pane-mirror hidden" id="abacus-pane-mirror">
+        <div class="abacus-pane-label" id="abacus-label-mirror">Other</div>
+        <div class="value-display value-display-mirror">
+          <span class="vd-label">VALUE</span><span id="abacus-value-2">0</span>
+        </div>
+        <div class="abacus-frame abacus-frame-mirror" id="abacus-frame-2"></div>
+      </div>
     </div>
   </section>
 
@@ -79,6 +96,7 @@
     <!-- Always-visible quick controls -->
     <div class="row sync-row">
       <button class="btn primary" id="btn-toggle-lock">🔓 Unlock Student</button>
+      <button class="btn sm" id="btn-toggle-mirror" title="Show two abacuses side by side — yours and the student's">🪞 Mirror</button>
       <label class="inline-label">Visibility
         <select id="sel-visibility" title="Anzan / ghost-bead mode for mental-math practice">
           <option value="full" selected>Full</option>

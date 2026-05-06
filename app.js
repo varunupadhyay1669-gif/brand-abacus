@@ -63,6 +63,11 @@ const state = {
   teacherToken: null,          // AUTONOMOUS: [ORDER-1] C4
   currentExerciseTitle: '',    // AUTONOMOUS: [ORDER-2] C9 — header badge
   beadHistory: [],             // AUTONOMOUS: [ORDER-2] undo stack of bead snapshots
+  // AUTONOMOUS: [ORDER-2] MIRROR MODE — when on, state.beadsState is MY abacus
+  // and state.otherBeads is the remote peer's abacus (read-only on my side).
+  // When off (default), state.beadsState is the shared single abacus.
+  mirrorMode: false,
+  otherBeads: [],
 };
 const MAX_BEAD_HISTORY = 30;
 
@@ -273,14 +278,17 @@ function initBeadsState(rodCount) {
   }));
 }
 
-function renderAbacus() {
-  const frame = $('#abacus-frame');
-  // AUTONOMOUS: [ORDER-1] C3 — only remove the rods, NOT the entire frame.
-  // Previously `frame.innerHTML = ''` wiped the #teacher-pointer overlay
-  // (and any other persistent children), so after a rod-count change the
-  // teacher's pointer broadcast had nowhere to render.
+// AUTONOMOUS: [ORDER-2] mirror-mode refactor — render functions accept an
+// opts object so we can render a SECOND read-only abacus next to the main
+// one without duplicating the math. opts: { frame, beads, valueEl, rodCount,
+// interactive }. Default behavior (no opts) is unchanged.
+function renderAbacus(opts) {
+  opts = opts || {};
+  const frame = opts.frame || $('#abacus-frame');
+  // C3 fix preserved: only strip the rods, not the entire frame contents.
   frame.querySelectorAll('.rod').forEach(el => el.remove());
-  const count = state.rodCount;
+  const count = opts.rodCount || state.rodCount;
+  const interactive = opts.interactive !== false;
   for (let r = 0; r < count; r++) {
     const rod = document.createElement('div');
     rod.className = 'rod';
@@ -296,33 +304,34 @@ function renderAbacus() {
     const lowerZone = rod.querySelector('.lower-zone');
 
     // Upper bead
-    const ub = makeBead(r, 'upper', 0);
+    const ub = makeBead(r, 'upper', 0, interactive);
     upperZone.appendChild(ub);
 
     // Lower beads: index 3 (top) to 0 (bottom) in DOM order so visually stacked bottom-up
     for (let i = 3; i >= 0; i--) {
-      lowerZone.appendChild(makeBead(r, 'lower', i));
+      lowerZone.appendChild(makeBead(r, 'lower', i, interactive));
     }
 
     frame.appendChild(rod);
   }
-  updateAllBeadPositions();
+  updateAllBeadPositions(opts);
 }
 
-function makeBead(rod, zone, index) {
+function makeBead(rod, zone, index, interactive) {
   const b = document.createElement('div');
   b.className = 'bead';
   b.dataset.rod = rod;
   b.dataset.zone = zone;
   b.dataset.index = index; // for lower: 0=bottom, 3=top; for upper: 0
-  attachBeadPointer(b);
+  if (interactive !== false) attachBeadPointer(b);
   return b;
 }
 
-function updateAllBeadPositions() {
-  const count = state.rodCount;
-  for (let r = 0; r < count; r++) updateRodVisual(r);
-  recomputeValue();
+function updateAllBeadPositions(opts) {
+  opts = opts || {};
+  const count = opts.rodCount || state.rodCount;
+  for (let r = 0; r < count; r++) updateRodVisual(r, opts);
+  recomputeValue(opts);
 }
 
 // Visual gap each active bead leaves between its surface and the crossbar.
@@ -331,10 +340,14 @@ function updateAllBeadPositions() {
 const BEAD_CROSSBAR_GAP = 6;
 const CROSSBAR_THICKNESS = 3; // matches .crossbar { height:3px }
 
-function updateRodVisual(r) {
-  const rodEl = $(`.rod[data-rod="${r}"]`);
+function updateRodVisual(r, opts) {
+  opts = opts || {};
+  const frame = opts.frame || $('#abacus-frame');
+  const beads = opts.beads || state.beadsState;
+  const rodEl = frame.querySelector(`.rod[data-rod="${r}"]`);
   if (!rodEl) return;
-  const s = state.beadsState[r];
+  const s = beads[r];
+  if (!s) return; // mirror state may not be seeded yet
   const upperZone = rodEl.querySelector('.upper-zone');
   const lowerZone = rodEl.querySelector('.lower-zone');
 
@@ -393,17 +406,37 @@ function updateRodVisual(r) {
   });
 }
 
-function recomputeValue() {
+function recomputeValue(opts) {
+  opts = opts || {};
+  const beads = opts.beads || state.beadsState;
+  const n = opts.rodCount || state.rodCount;
+  const valueEl = opts.valueEl || $('#abacus-value');
   let total = 0;
-  const n = state.rodCount;
   for (let r = 0; r < n; r++) {
-    const s = state.beadsState[r];
+    const s = beads[r];
+    if (!s) continue;
     const rodVal = (s.upper ? 5 : 0) + s.lower.filter(Boolean).length;
     const place = Math.pow(10, n - 1 - r);
     total += rodVal * place;
   }
-  state.abacusValue = total;
-  $('#abacus-value').textContent = total.toLocaleString();
+  // Only update the canonical state.abacusValue when rendering the MAIN abacus
+  if (!opts.beads) state.abacusValue = total;
+  if (valueEl) valueEl.textContent = total.toLocaleString();
+  // Whenever we recompute either side, refresh the match indicator
+  updateMatchIndicator();
+  return total;
+}
+
+// Compute the integer value of an arbitrary beadsState (used by the match indicator).
+function computeBeadValue(beads, n) {
+  let total = 0;
+  for (let r = 0; r < n; r++) {
+    const s = beads[r];
+    if (!s) continue;
+    const rodVal = (s.upper ? 5 : 0) + s.lower.filter(Boolean).length;
+    total += rodVal * Math.pow(10, n - 1 - r);
+  }
+  return total;
 }
 
 function resetAbacus() {
@@ -478,6 +511,9 @@ function rangeDeactivateDown(rod, fromIndex) {
 
 // =============== BEAD INTERACTION ===============
 function isInteractionBlocked() {
+  // AUTONOMOUS: [ORDER-2] mirror-mode override — in mirror mode each user
+  // owns their own abacus, so the lock is irrelevant.
+  if (state.mirrorMode) return false;
   // A student in a room cannot manipulate beads while locked.
   return state.isInRoom && state.role === 'student' && state.studentLocked;
 }
@@ -1177,6 +1213,99 @@ function setVisibility(viz) {
   }
 }
 
+// =============== AUTONOMOUS: [ORDER-2] MIRROR MODE ===============
+function applyMirrorMode(on, payload) {
+  state.mirrorMode = !!on;
+  const pane = document.getElementById('abacus-pane-mirror');
+  const labelMain = document.getElementById('abacus-label-main');
+  const labelMirror = document.getElementById('abacus-label-mirror');
+  const lockBtn = document.getElementById('btn-toggle-lock');
+  const mirrorBtn = document.getElementById('btn-toggle-mirror');
+  if (mirrorBtn) mirrorBtn.textContent = on ? '🪞 Mirror: ON' : '🪞 Mirror';
+
+  if (on) {
+    payload = payload || {};
+    // Pick the right side as MY beads, the other side as OTHER beads
+    const teacherBeads = (payload.teacherBeads && payload.teacherBeads.length) ? payload.teacherBeads : null;
+    const studentBeads = (payload.studentBeads && payload.studentBeads.length) ? payload.studentBeads : null;
+    const fallback = JSON.parse(JSON.stringify(state.beadsState || []));
+    if (state.role === 'teacher') {
+      state.beadsState = teacherBeads || fallback;
+      state.otherBeads = studentBeads || fallback;
+      if (labelMain) { labelMain.textContent = '👨‍🏫 You (Teacher)'; labelMain.classList.remove('hidden'); }
+      if (labelMirror) labelMirror.textContent = '🧑 Student';
+    } else {
+      state.beadsState = studentBeads || fallback;
+      state.otherBeads = teacherBeads || fallback;
+      if (labelMain) { labelMain.textContent = '🧑 You (Student)'; labelMain.classList.remove('hidden'); }
+      if (labelMirror) labelMirror.textContent = '👨‍🏫 Teacher';
+    }
+    if (pane) pane.classList.remove('hidden');
+    if (lockBtn) lockBtn.style.display = 'none'; // lock is irrelevant in mirror mode
+    renderAbacus();         // main
+    renderMirrorAbacus();   // secondary
+  } else {
+    // Returning to single-abacus: server sends the new shared beadsState
+    if (payload && payload.beadsState && payload.beadsState.length) {
+      state.beadsState = payload.beadsState;
+    }
+    state.otherBeads = [];
+    if (pane) pane.classList.add('hidden');
+    if (labelMain) labelMain.classList.add('hidden');
+    if (lockBtn) lockBtn.style.display = '';
+    renderAbacus();
+  }
+  updateMatchIndicator();
+}
+
+function renderMirrorAbacus() {
+  if (!state.mirrorMode) return;
+  const frame = document.getElementById('abacus-frame-2');
+  const valueEl = document.getElementById('abacus-value-2');
+  if (!frame) return;
+  renderAbacus({
+    frame, valueEl,
+    beads: state.otherBeads,
+    rodCount: state.rodCount,
+    interactive: false,
+  });
+}
+
+function updateMirrorAbacus() {
+  if (!state.mirrorMode) return;
+  const frame = document.getElementById('abacus-frame-2');
+  const valueEl = document.getElementById('abacus-value-2');
+  if (!frame || !state.otherBeads || !state.otherBeads.length) return;
+  updateAllBeadPositions({
+    frame, valueEl,
+    beads: state.otherBeads,
+    rodCount: state.rodCount,
+  });
+}
+
+function updateMatchIndicator() {
+  const ind = document.getElementById('match-indicator');
+  if (!ind) return;
+  if (!state.mirrorMode) { ind.classList.add('hidden'); return; }
+  ind.classList.remove('hidden');
+  const mine = state.abacusValue;
+  const theirs = computeBeadValue(state.otherBeads || [], state.rodCount);
+  if (mine === theirs) {
+    ind.textContent = `✓ Matched · ${mine}`;
+    ind.className = 'match-indicator matched';
+  } else {
+    ind.textContent = `✗ ${mine} vs ${theirs}`;
+    ind.className = 'match-indicator different';
+  }
+}
+
+function toggleMirrorMode() {
+  if (state.role !== 'teacher' || !state.isInRoom || !state.socket) {
+    toast('Mirror Mode is teacher-only inside a room'); return;
+  }
+  state.socket.emit('set-mirror-mode', { on: !state.mirrorMode });
+}
+
 // =============== DEMO REPLAY (animated solution playback) ===============
 async function playDemoForCurrentQuestion() {
   if (state.demoPlaying) return;
@@ -1319,10 +1448,19 @@ function initSocket() {
     state.suppressRemoteUpdate = true;
     const rodCountChanged = data.rodCount && data.rodCount !== state.rodCount;
     if (data.rodCount) state.rodCount = data.rodCount;
-    if (data.beadsState) state.beadsState = data.beadsState;
-    $('#sel-rod-count').value = state.rodCount;
-    if (rodCountChanged) renderAbacus();
-    else updateAllBeadPositions(); // smooth animated transition, not a teleport
+    // AUTONOMOUS: [ORDER-2] in mirror mode, set-value is the teacher pushing
+    // their own abacus state, which on a student is the OTHER (read-only)
+    // abacus, not the student's own.
+    if (state.mirrorMode && state.role === 'student') {
+      if (data.beadsState) state.otherBeads = data.beadsState;
+      $('#sel-rod-count').value = state.rodCount;
+      updateMirrorAbacus();
+    } else {
+      if (data.beadsState) state.beadsState = data.beadsState;
+      $('#sel-rod-count').value = state.rodCount;
+      if (rodCountChanged) renderAbacus();
+      else updateAllBeadPositions();
+    }
     state.suppressRemoteUpdate = false;
     if (typeof data.value === 'number') toast(`Teacher set value → ${data.value.toLocaleString()}`);
   });
@@ -1351,6 +1489,20 @@ function initSocket() {
     if (visibility !== 'full') toast(`👁 Visibility: ${visibility}`);
   });
 
+  // AUTONOMOUS: [ORDER-2] MIRROR MODE — teacher toggles, server broadcasts
+  s.on('set-mirror-mode', (payload) => {
+    applyMirrorMode(payload && payload.on, payload || {});
+    toast(payload && payload.on
+      ? '🪞 Mirror mode ON — your abacus + the other one'
+      : '🪞 Mirror mode OFF — back to shared abacus');
+  });
+
+  s.on('mirror-bead-update', ({ side, beadsState } = {}) => {
+    if (!state.mirrorMode || !beadsState) return;
+    state.otherBeads = beadsState;
+    updateMirrorAbacus();
+  });
+
   // Student → teacher: "I'm stuck, show me"
   s.on('request-demo', () => {
     if (state.role !== 'teacher') return;
@@ -1363,8 +1515,15 @@ function initSocket() {
     if (!data || !data.beadsState) return;
     state.suppressRemoteUpdate = true;
     if (data.rodCount) state.rodCount = data.rodCount;
-    state.beadsState = data.beadsState;
-    updateAllBeadPositions();
+    // AUTONOMOUS: [ORDER-2] in mirror mode, demo plays on the teacher's
+    // abacus — for a student that's the OTHER side (read-only mirror frame).
+    if (state.mirrorMode && state.role === 'student') {
+      state.otherBeads = data.beadsState;
+      updateMirrorAbacus();
+    } else {
+      state.beadsState = data.beadsState;
+      updateAllBeadPositions();
+    }
     state.suppressRemoteUpdate = false;
     soundDemoStep();
     if (data.label) toast(`Demo: ${data.label}`);
@@ -1505,6 +1664,13 @@ function joinRoom(code) {
       applyVisibility(resp.state.visibility || 'full');
       renderLockState();
       renderPushedQuestion();
+      // AUTONOMOUS: [ORDER-2] re-apply mirror mode if room is already in it
+      if (resp.state.mirrorMode) {
+        applyMirrorMode(true, {
+          teacherBeads: resp.state.teacherBeads,
+          studentBeads: resp.state.studentBeads,
+        });
+      }
     }
   });
 }
@@ -1533,6 +1699,16 @@ function leaveRoom() {
 
 function emitBeadSync() {
   if (!state.isInRoom || !state.socket || state.suppressRemoteUpdate) return;
+  // AUTONOMOUS: [ORDER-2] mirror mode — emit to the dual-state channel and
+  // skip the lock check (each side owns their own abacus).
+  if (state.mirrorMode) {
+    state.socket.emit('mirror-bead-update', {
+      rodCount: state.rodCount,
+      beadsState: state.beadsState,
+    });
+    updateMatchIndicator();
+    return;
+  }
   if (state.role === 'student' && state.studentLocked) return;
   state.socket.emit('bead-update', {
     rodCount: state.rodCount,
@@ -1966,6 +2142,9 @@ function wireEvents() {
 
   // Sound on/off
   $('#btn-toggle-sound').addEventListener('click', () => setSoundOn(!state.soundOn));
+
+  // AUTONOMOUS: [ORDER-2] Mirror Mode toggle
+  $('#btn-toggle-mirror').addEventListener('click', toggleMirrorMode);
 
   // Pane tabs (Library / Progress / Advanced)
   $$('#tc-tabs .tc-tab').forEach(t => {

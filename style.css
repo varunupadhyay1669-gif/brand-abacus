@@ -366,6 +366,68 @@ label > select,label > input{color:var(--text);font-size:14px;text-transform:non
 .summary-actions{
   margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;
 }
+
+/* MIRROR MODE — dual abacus stack */
+.abacus-header-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.abacus-stack{display:flex;flex-direction:column;gap:14px}
+.abacus-pane{position:relative}
+.abacus-pane-label{
+  font-family:'Outfit',sans-serif;font-weight:700;font-size:12px;
+  color:var(--accent-primary-2);margin-bottom:8px;text-align:center;
+  text-transform:uppercase;letter-spacing:1.4px;
+  background:rgba(99,102,241,.10);border:1px solid rgba(99,102,241,.22);
+  padding:5px 14px;border-radius:999px;display:inline-block;
+}
+.abacus-pane{display:flex;flex-direction:column;align-items:center}
+.abacus-pane > .abacus-frame,
+.abacus-pane > .value-display-mirror,
+.abacus-pane > .abacus-pane-label{align-self:center}
+.abacus-pane > .abacus-frame{width:100%}
+/* Mirror (read-only) pane: subtly de-emphasized so attention stays on yours */
+.abacus-pane-mirror{
+  background:rgba(99,102,241,.04);border:1px dashed rgba(99,102,241,.2);
+  border-radius:18px;padding:12px;
+}
+.abacus-frame-mirror{
+  min-height:280px;padding:22px 16px 24px;
+  filter:saturate(.85);
+}
+.abacus-frame-mirror .bead{cursor:default}
+.abacus-frame-mirror .bead:hover{transform:none}
+.value-display-mirror{
+  font-family:'Outfit',monospace;font-weight:800;letter-spacing:1.5px;
+  background:linear-gradient(180deg,rgba(8,12,28,.75),rgba(15,22,48,.75));
+  border:1px solid rgba(165,180,252,.12);
+  padding:6px 18px;border-radius:10px;color:#c7d2fe;
+  display:inline-block;margin-bottom:8px;
+}
+.value-display-mirror .vd-label{font-size:8px;letter-spacing:3px;color:#6b75a0;font-weight:600;display:block;margin-bottom:2px}
+.value-display-mirror #abacus-value-2{display:block;font-size:22px;line-height:1}
+
+/* MATCH INDICATOR */
+.match-indicator{
+  padding:6px 14px;border-radius:999px;font-size:12px;font-weight:700;
+  background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--text-dim);
+  letter-spacing:.4px;
+}
+.match-indicator.matched{
+  background:rgba(74,222,128,.16);border-color:rgba(74,222,128,.4);color:#86efac;
+  box-shadow:0 0 18px rgba(74,222,128,.25);
+  animation:matched-glow 1.6s ease-in-out infinite;
+}
+.match-indicator.different{
+  background:rgba(248,113,113,.10);border-color:rgba(248,113,113,.3);color:#fca5a5;
+}
+@keyframes matched-glow{
+  0%,100%{box-shadow:0 0 18px rgba(74,222,128,.25)}
+  50%{box-shadow:0 0 28px rgba(74,222,128,.45)}
+}
+
+/* On narrow viewports, side-by-side instead of stacked saves vertical space */
+@media (min-width:1100px){
+  .abacus-stack{flex-direction:row;align-items:flex-start}
+  .abacus-pane{flex:1;min-width:0}
+}
 .q-column{
   background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:14px;
   padding:24px;min-height:160px;max-height:60vh;display:flex;flex-direction:column;
