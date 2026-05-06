@@ -60,6 +60,8 @@ const state = {
   studentName: '',             // optional, used to tag and look up session logs
   activePane: 'library',       // 'library' | 'progress' | 'advanced'
   activeLibraryCat: 'direct',
+  teacherToken: null,          // AUTONOMOUS: [ORDER-1] C4
+  currentExerciseTitle: '',    // AUTONOMOUS: [ORDER-2] C9 — header badge
 };
 
 // =============== EXERCISE LIBRARY ===============
@@ -271,7 +273,11 @@ function initBeadsState(rodCount) {
 
 function renderAbacus() {
   const frame = $('#abacus-frame');
-  frame.innerHTML = '';
+  // AUTONOMOUS: [ORDER-1] C3 — only remove the rods, NOT the entire frame.
+  // Previously `frame.innerHTML = ''` wiped the #teacher-pointer overlay
+  // (and any other persistent children), so after a rod-count change the
+  // teacher's pointer broadcast had nowhere to render.
+  frame.querySelectorAll('.rod').forEach(el => el.remove());
   const count = state.rodCount;
   for (let r = 0; r < count; r++) {
     const rod = document.createElement('div');
@@ -699,6 +705,10 @@ function generatePractice() {
   const count = Math.max(1, Math.min(50, +$('#inp-qcount').value || 10));
   const rowsPerQ = Math.max(2, Math.min(50, +$('#sel-rows-per-q').value || 5));
   state.rowsPerQuestion = rowsPerQ;
+  // AUTONOMOUS: [ORDER-2] C9 — show in the practice header what's loaded
+  const trickName = trickSel === 'auto' ? 'Auto' : (TRICKS[trickSel]?.name || trickSel);
+  state.currentExerciseTitle = `${level?.name || 'Custom'} · ${trickName} · ${rowsPerQ} rows × ${count}`;
+  setNowPracticing(state.currentExerciseTitle);
 
   const availableTricks = trickSel === 'auto' ? level.tricks : [trickSel];
   const qs = [];
@@ -821,6 +831,10 @@ function checkAnswer() {
 }
 
 function nextQuestion() {
+  // AUTONOMOUS: [ORDER-1] C7 — flush any in-flight dictation so the next
+  // question doesn't get spoken with leftover utterances from the previous.
+  try { speechSynthesis.cancel(); } catch (_) {}
+  clearDictRowHighlight();
   state.currentQIndex += 1;
   if (state.currentQIndex >= state.allQuestions.length) showSummary();
   else loadQuestion();
@@ -908,6 +922,10 @@ function speakText(text, lang, rate) {
 async function playDictation(startIdx = 0) {
   const q = state.allQuestions[state.currentQIndex];
   if (!q) return;
+  // AUTONOMOUS: [ORDER-1] C7 — cancel any pending utterances so a second
+  // click on Play doesn't stack onto the previous run. Without this, the
+  // pause/repeat/play state machine drifts into a confused state.
+  try { speechSynthesis.cancel(); } catch (_) {}
   state.dictationPaused = false;
   const seq = [q.start.toString(), ...q.ops.map(o => (o.op === '+' ? 'plus ' : 'minus ') + o.n)];
   state.dictationQueue = seq;
@@ -987,7 +1005,16 @@ function setSidebarOpen(open) {
 
 // =============== SOUND CUES (Web Audio synth — no asset files) ===============
 function ensureAudio() {
-  if (state.audioCtx) return state.audioCtx;
+  if (state.audioCtx) {
+    // AUTONOMOUS: [ORDER-1] C8 — Chrome/Safari suspend AudioContext until a
+    // user gesture. If the context is suspended, kick it back on. ensureAudio
+    // is called from sound emitters, but those run during user-driven events
+    // (clicks, keypresses), so resume() lands inside the gesture.
+    if (state.audioCtx.state === 'suspended') {
+      try { state.audioCtx.resume(); } catch (_) {}
+    }
+    return state.audioCtx;
+  }
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     state.audioCtx = new Ctx();
@@ -1299,10 +1326,79 @@ function escapeHtml(s) {
   }[c]));
 }
 
+// AUTONOMOUS: [ORDER-1] C6 — safe arithmetic evaluator (no eval, no Function).
+// Supports + - * / and parentheses on integers/decimals. Throws on anything else.
+function safeArithmetic(input) {
+  const tokens = [];
+  const src = String(input).replace(/\s+/g, '');
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch >= '0' && ch <= '9' || ch === '.') {
+      let j = i + 1;
+      while (j < src.length && (src[j] === '.' || (src[j] >= '0' && src[j] <= '9'))) j++;
+      tokens.push({ t: 'num', v: parseFloat(src.slice(i, j)) });
+      i = j;
+    } else if ('+-*/()'.indexOf(ch) >= 0) {
+      tokens.push({ t: 'op', v: ch });
+      i++;
+    } else {
+      throw new Error('bad char');
+    }
+  }
+  let p = 0;
+  const peek = () => tokens[p];
+  const eat = () => tokens[p++];
+  function parseExpr() {
+    let left = parseTerm();
+    while (peek() && peek().t === 'op' && (peek().v === '+' || peek().v === '-')) {
+      const op = eat().v;
+      const right = parseTerm();
+      left = op === '+' ? left + right : left - right;
+    }
+    return left;
+  }
+  function parseTerm() {
+    let left = parseFactor();
+    while (peek() && peek().t === 'op' && (peek().v === '*' || peek().v === '/')) {
+      const op = eat().v;
+      const right = parseFactor();
+      if (op === '/' && right === 0) throw new Error('div by zero');
+      left = op === '*' ? left * right : left / right;
+    }
+    return left;
+  }
+  function parseFactor() {
+    const tok = eat();
+    if (!tok) throw new Error('unexpected end');
+    if (tok.t === 'num') return tok.v;
+    if (tok.t === 'op' && tok.v === '(') {
+      const v = parseExpr();
+      const close = eat();
+      if (!close || close.v !== ')') throw new Error('unclosed paren');
+      return v;
+    }
+    if (tok.t === 'op' && tok.v === '-') return -parseFactor(); // unary minus
+    if (tok.t === 'op' && tok.v === '+') return parseFactor();  // unary plus
+    throw new Error('unexpected token');
+  }
+  const result = parseExpr();
+  if (p !== tokens.length) throw new Error('trailing tokens');
+  if (!Number.isFinite(result)) throw new Error('not finite');
+  return result;
+}
+
 function createRoom() {
   initSocket();
   state.socket.emit('create-room', {}, (resp) => {
     if (!resp?.ok) { toast('Could not create room'); return; }
+    // AUTONOMOUS: [ORDER-1] C4 — persist the teacher token so a reload of
+    // this tab can re-claim teacher. Anyone WITHOUT this token (other tabs,
+    // siblings clicking the share link) is forced into student role.
+    if (resp.teacherToken) {
+      try { sessionStorage.setItem(`teacherToken-${resp.code}`, resp.teacherToken); } catch (_) {}
+      state.teacherToken = resp.teacherToken;
+    }
     enterRoom(resp.code, 'teacher');
   });
 }
@@ -1310,7 +1406,12 @@ function createRoom() {
 function joinRoom(code) {
   if (!code) { toast('Enter a room code'); return; }
   initSocket();
-  state.socket.emit('join-room', { code: code.toUpperCase(), asRole: 'student' }, (resp) => {
+  // AUTONOMOUS: [ORDER-1] C4 — if THIS browser created this room, reclaim
+  // teacher role with the stored token. Otherwise join as student.
+  let savedTeacherToken = null;
+  try { savedTeacherToken = sessionStorage.getItem(`teacherToken-${code.toUpperCase()}`); } catch (_) {}
+  const asRole = savedTeacherToken ? 'teacher' : 'student';
+  state.socket.emit('join-room', { code: code.toUpperCase(), asRole, teacherToken: savedTeacherToken || undefined }, (resp) => {
     if (!resp?.ok) { toast('Room not found'); return; }
     enterRoom(resp.code, resp.role);
     if (resp.state) {
@@ -1487,6 +1588,9 @@ function launchExercise(ex) {
   const count = Math.max(1, cfg.count || 10);
   const rows = Math.max(2, cfg.rows || 5);
   const mode = cfg.mode || 'guided';
+  // AUTONOMOUS: [ORDER-2] C9 — capture title for the persistent badge
+  state.currentExerciseTitle = ex.title || '';
+  setNowPracticing(state.currentExerciseTitle);
 
   // Reset session state
   state.allQuestions = [];
@@ -1522,6 +1626,17 @@ function launchExercise(ex) {
   loadQuestion();
   emitSession();
   toast(`▶ ${ex.title}`);
+}
+
+// AUTONOMOUS: [ORDER-2] C9 — surface the loaded exercise title in the
+// practice header so the tutor always knows what set is loaded (the
+// transient toast was the only previous indicator and it faded in 2s).
+function setNowPracticing(title) {
+  const el = $('#now-practicing');
+  if (!el) return;
+  if (!title) { el.classList.add('hidden'); el.textContent = ''; return; }
+  el.classList.remove('hidden');
+  el.textContent = `▶ ${title}`;
 }
 
 // =============== TAB SWITCHING ===============
@@ -1601,11 +1716,14 @@ async function fetchPastSessions() {
           ? Math.round(((s.correctCount || 0) / ((s.correctCount || 0) + (s.wrongCount || 0))) * 100)
           : 0;
         const when = s.savedAt ? new Date(s.savedAt).toLocaleString() : '—';
+        // AUTONOMOUS: [ORDER-1] C1 — escape stored fields before innerHTML.
+        // The server now validates inputs (defense-in-depth), but old logs
+        // written before validation may still contain unsafe strings.
         return `<div class="prog-history-row">
-          <span class="ph-when">${when}</span>
+          <span class="ph-when">${escapeHtml(when)}</span>
           <span class="ph-stat">${s.correctCount || 0}/${(s.correctCount || 0) + (s.wrongCount || 0)} (${acc}%)</span>
-          <span class="ph-stat">${formatHMS(s.totalTimeSec || 0)}</span>
-          <span class="ph-stat">Room ${s.roomCode || '—'}</span>
+          <span class="ph-stat">${escapeHtml(formatHMS(s.totalTimeSec || 0))}</span>
+          <span class="ph-stat">Room ${escapeHtml(s.roomCode || '—')}</span>
         </div>`;
       }).join('');
     el.innerHTML = sumHtml + rows;
@@ -1781,11 +1899,13 @@ function wireEvents() {
     }
     const text = $('#inp-push-q').value.trim();
     if (!text) { toast('Type a question'); return; }
-    // Try to parse "expression = ?" style, e.g. "7 + 5 = ?"
-    const m = text.match(/^([\d+\-*/\s]+?)\s*=\s*\?\s*$/);
+    // AUTONOMOUS: [ORDER-1] C6 — replace Function() eval with a deterministic
+    // recursive-descent parser. The regex was already tight, but eval is a
+    // footgun — anyone widening the regex later would create a real RCE.
+    const m = text.match(/^([\d+\-*/\s().]+?)\s*=\s*\?\s*$/);
     let expected = null;
     if (m) {
-      try { expected = Function(`"use strict"; return (${m[1]});`)(); } catch (_) {}
+      try { expected = safeArithmetic(m[1]); } catch (_) {}
     }
     const q = { text, expected, pushedAt: Date.now() };
     state.pushedQuestion = q;

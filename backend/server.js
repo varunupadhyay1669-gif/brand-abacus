@@ -1,6 +1,7 @@
 // Abacus Studio backend - Express + Socket.IO
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -9,6 +10,9 @@ const { Server } = require('socket.io');
 const PORT = process.env.PORT || 3001;
 const ROOT = path.join(__dirname, '..');
 const LOG_FILE = path.join(__dirname, 'session-logs.json');
+const LOG_FILE_TMP = LOG_FILE + '.tmp';
+const MAX_LOG_ENTRIES = 2000;       // AUTONOMOUS: [ORDER-4] FP1 — cap log file growth
+const MAX_BEADS_PER_UPDATE = 30;    // AUTONOMOUS: [ORDER-4] FP3 — cap rod count payload
 
 const app = express();
 app.use(cors());
@@ -32,19 +36,71 @@ function defaultState() {
   };
 }
 
+// AUTONOMOUS: [ORDER-1] C5 — serialize log writes through a single-flight queue
+// so concurrent POSTs don't read-modify-write over each other. Atomic via
+// write-temp-then-rename so a crash mid-write doesn't corrupt the file.
+let logWriteChain = Promise.resolve();
 function appendSessionLog(entry) {
-  try {
-    let arr = [];
-    if (fs.existsSync(LOG_FILE)) {
-      try { arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')); } catch (_) { arr = []; }
+  logWriteChain = logWriteChain.then(() => new Promise((resolve) => {
+    try {
+      let arr = [];
+      if (fs.existsSync(LOG_FILE)) {
+        try { arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')); } catch (_) { arr = []; }
+      }
+      arr.push({ ...entry, savedAt: new Date().toISOString() });
+      // FP1: trim to last MAX_LOG_ENTRIES
+      if (arr.length > MAX_LOG_ENTRIES) arr = arr.slice(arr.length - MAX_LOG_ENTRIES);
+      fs.writeFileSync(LOG_FILE_TMP, JSON.stringify(arr, null, 2));
+      fs.renameSync(LOG_FILE_TMP, LOG_FILE);
+      resolve(true);
+    } catch (e) {
+      console.error('session log write failed', e);
+      try { fs.existsSync(LOG_FILE_TMP) && fs.unlinkSync(LOG_FILE_TMP); } catch (_) {}
+      resolve(false);
     }
-    arr.push({ ...entry, savedAt: new Date().toISOString() });
-    fs.writeFileSync(LOG_FILE, JSON.stringify(arr, null, 2));
-    return true;
-  } catch (e) {
-    console.error('session log write failed', e);
-    return false;
-  }
+  }));
+  return logWriteChain;
+}
+
+// AUTONOMOUS: [ORDER-1] C2 — strict validation/sanitization for session-log POST.
+// Anything written here is later rendered in the Progress panel; without these
+// checks a malicious POST can store an XSS payload that fires for every teacher.
+const SAFE_TEXT_RE = /^[\p{L}\p{N}\s._@'\-]{0,64}$/u; // letters, digits, spaces, common punct
+const SAFE_ROOM_RE = /^[A-Z0-9]{1,12}$|^solo$/;
+function safeText(v, max = 64) {
+  if (typeof v !== 'string') return '';
+  const s = v.trim().slice(0, max);
+  return SAFE_TEXT_RE.test(s) ? s : '';
+}
+function clampNum(v, lo, hi) { v = +v || 0; return Math.max(lo, Math.min(hi, v)); }
+function sanitizeSessionLog(body) {
+  if (!body || typeof body !== 'object') return null;
+  const roomCode = (body.roomCode || '').toString().toUpperCase();
+  if (!SAFE_ROOM_RE.test(roomCode)) return null;
+  const out = {
+    roomCode,
+    studentName: safeText(body.studentName, 64),
+    startedAt: typeof body.startedAt === 'string' ? body.startedAt.slice(0, 40) : null,
+    totalTimeSec: clampNum(body.totalTimeSec, 0, 24 * 3600),
+    score: clampNum(body.score, 0, 1e6),
+    streak: clampNum(body.streak, 0, 1000),
+    correctCount: clampNum(body.correctCount, 0, 5000),
+    wrongCount: clampNum(body.wrongCount, 0, 5000),
+    accuracy: Math.max(0, Math.min(1, +body.accuracy || 0)),
+    assistedCount: clampNum(body.assistedCount, 0, 5000),
+    questions: Array.isArray(body.questions) ? body.questions.slice(0, 200).map(q => ({
+      trickId: safeText(q.trickId, 40),
+      start: clampNum(q.start, 0, 1e12),
+      ops: Array.isArray(q.ops) ? q.ops.slice(0, 50).map(o => ({
+        op: o.op === '+' || o.op === '-' ? o.op : '+',
+        n: clampNum(o.n, 0, 9999),
+      })) : [],
+      expected: clampNum(q.expected, -1e12, 1e12),
+      elapsedSec: Math.max(0, +q.elapsedSec || 0),
+      correct: !!q.correct,
+    })) : [],
+  };
+  return out;
 }
 
 // 6-char code, exclude O 0 I 1
@@ -95,10 +151,11 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }))
 
 // Persist a session summary (questions, answers, time, accuracy).
 // MVP storage: JSON file on disk. Drop-in replace with Postgres/Supabase later.
-app.post('/api/session-log', (req, res) => {
-  const body = req.body || {};
-  if (!body.roomCode) return res.status(400).json({ ok: false, error: 'missing_roomCode' });
-  const ok = appendSessionLog(body);
+app.post('/api/session-log', async (req, res) => {
+  // AUTONOMOUS: [ORDER-1] C2 — sanitize before persisting
+  const clean = sanitizeSessionLog(req.body);
+  if (!clean) return res.status(400).json({ ok: false, error: 'invalid_payload' });
+  const ok = await appendSessionLog(clean);
   res.json({ ok });
 });
 
@@ -180,8 +237,14 @@ io.on('connection', (socket) => {
 
   socket.on('create-room', (_payload, ack) => {
     const code = genCode();
+    // AUTONOMOUS: [ORDER-1] C4 — issue a teacher token at room creation. Only
+    // a client that presents this token can later claim teacher role on
+    // rejoin. Stops a malicious peer from hijacking after the teacher's
+    // socket drops momentarily.
+    const teacherToken = crypto.randomBytes(16).toString('hex');
     rooms.set(code, {
       teacherId: socket.id,
+      teacherToken,
       students: new Set(),
       state: defaultState(),
       lastActivity: Date.now()
@@ -189,17 +252,20 @@ io.on('connection', (socket) => {
     socket.join(code);
     joinedCode = code;
     role = 'teacher';
-    ack && ack({ ok: true, code });
+    ack && ack({ ok: true, code, teacherToken });
     io.to(code).emit('user-count-update', { teacher: 1, students: 0 });
   });
 
-  socket.on('join-room', ({ code, asRole } = {}, ack) => {
+  socket.on('join-room', ({ code, asRole, teacherToken } = {}, ack) => {
     code = (code || '').toUpperCase();
     const r = rooms.get(code);
     if (!r) { ack && ack({ ok: false, error: 'not_found' }); return; }
     socket.join(code);
     joinedCode = code;
-    if (asRole === 'teacher' && !r.teacherId) {
+    // AUTONOMOUS: [ORDER-1] C4 — only honor asRole='teacher' when the right
+    // token is presented. Anyone else falls back to student.
+    const tokenOk = teacherToken && r.teacherToken && teacherToken === r.teacherToken;
+    if (asRole === 'teacher' && tokenOk) {
       r.teacherId = socket.id;
       role = 'teacher';
     } else {
@@ -252,13 +318,23 @@ io.on('connection', (socket) => {
   function ack(cb, payload) { try { cb && cb(payload); } catch (_) {} }
 
   // ---- Bead manipulation: gated by lock for students ----
+  // AUTONOMOUS: [ORDER-4] FP2 — per-socket throttle for bead-update so a buggy
+  // or malicious client can't fan out > ~30 updates/sec. Drops silently when
+  // breaching; the next legitimate update will catch up authoritative state.
+  let lastBeadUpdateAt = 0;
   socket.on('bead-update', (data, cb) => {
+    const now = Date.now();
+    if (now - lastBeadUpdateAt < 30) return ack(cb, { ok: false, error: 'throttled' });
+    lastBeadUpdateAt = now;
     const r = getRoom();
     if (!r) return ack(cb, { ok: false, error: 'no_room' });
     if (!isTeacher() && r.state.studentLocked) {
-      // Reassert authoritative state to the offending student so their UI reverts
       socket.emit('bead-update', { rodCount: r.state.rodCount, beadsState: r.state.beadsState });
       return ack(cb, { ok: false, error: 'locked' });
+    }
+    // AUTONOMOUS: [ORDER-4] FP3 — cap payload size to prevent memory abuse
+    if (data && Array.isArray(data.beadsState) && data.beadsState.length > MAX_BEADS_PER_UPDATE) {
+      return ack(cb, { ok: false, error: 'too_many_rods' });
     }
     r.state.rodCount = (data && data.rodCount) || r.state.rodCount;
     r.state.beadsState = (data && data.beadsState) || r.state.beadsState;
