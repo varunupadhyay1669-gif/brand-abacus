@@ -62,7 +62,9 @@ const state = {
   activeLibraryCat: 'direct',
   teacherToken: null,          // AUTONOMOUS: [ORDER-1] C4
   currentExerciseTitle: '',    // AUTONOMOUS: [ORDER-2] C9 — header badge
+  beadHistory: [],             // AUTONOMOUS: [ORDER-2] undo stack of bead snapshots
 };
+const MAX_BEAD_HISTORY = 30;
 
 // =============== EXERCISE LIBRARY ===============
 // Pre-built lesson sets. Each maps to one click → loaded into the practice queue.
@@ -405,6 +407,8 @@ function recomputeValue() {
 }
 
 function resetAbacus() {
+  // AUTONOMOUS: [ORDER-2] keep one undoable step before clearing
+  pushBeadHistory();
   initBeadsState(state.rodCount);
   updateAllBeadPositions();
   emitBeadSync();
@@ -478,6 +482,24 @@ function isInteractionBlocked() {
   return state.isInRoom && state.role === 'student' && state.studentLocked;
 }
 
+// AUTONOMOUS: [ORDER-2] — bead undo stack. Snapshots are deep-cloned so
+// later mutations to state.beadsState don't poison the history.
+function pushBeadHistory() {
+  state.beadHistory.push(JSON.parse(JSON.stringify(state.beadsState)));
+  if (state.beadHistory.length > MAX_BEAD_HISTORY) state.beadHistory.shift();
+}
+function undoBeadMove() {
+  if (isInteractionBlocked()) { toast('🔒 Locked — ask teacher to unlock'); return; }
+  if (!state.beadHistory.length) { toast('Nothing to undo'); return; }
+  const prev = state.beadHistory.pop();
+  state.beadsState = prev;
+  updateAllBeadPositions();
+  emitBeadSync();
+  soundBeadClick();
+  toast('↶ Undid last move');
+}
+function clearBeadHistory() { state.beadHistory.length = 0; }
+
 function attachBeadPointer(bead) {
   let startY = 0, startX = 0, dragged = false, pointerId = null;
   const THRESH = 5;
@@ -492,6 +514,8 @@ function attachBeadPointer(bead) {
     bead.setPointerCapture(pointerId);
     startY = e.clientY; startX = e.clientX; dragged = false;
     bead.classList.add('bead-dragging');
+    // AUTONOMOUS: [ORDER-2] snapshot pre-move state for Z undo
+    pushBeadHistory();
   };
   const onMove = (e) => {
     if (pointerId === null) return;
@@ -817,6 +841,8 @@ function checkAnswer() {
 
   // Live progress panel updates
   if (state.activePane === 'progress') refreshProgressPanel();
+  updateProgressTabBadge();
+  saveLocalSession();
 
   // Unlock mixed mode at 80% guided accuracy
   if (state.guidedAccuracy.total >= 5 &&
@@ -839,6 +865,7 @@ function nextQuestion() {
   if (state.currentQIndex >= state.allQuestions.length) showSummary();
   else loadQuestion();
   emitSession();
+  saveLocalSession();
 }
 
 function skipQuestion() {
@@ -850,6 +877,9 @@ function skipQuestion() {
 
 function showSummary() {
   stopTimer();
+  // AUTONOMOUS: [ORDER-2] session complete → drop the resume payload so a
+  // future reload doesn't offer to "resume" an already-finished run.
+  clearLocalSession();
   const total = state.correctCount + state.wrongCount;
   const avg = state.questionTimings.length
     ? (state.questionTimings.reduce((s,t)=>s+t.elapsed,0)/state.questionTimings.length).toFixed(1)
@@ -875,19 +905,68 @@ function showSummary() {
   let longest = null;
   state.questionTimings.forEach(t => { if (!longest || t.elapsed > longest.elapsed) longest = t; });
 
+  // AUTONOMOUS: [ORDER-2] wrong-answer review — surface a one-click retry
+  // of just the questions the student got wrong. Pedagogically the right
+  // loop: don't grind the right ones, target what's actually weak.
+  const wrongCount = state.questionTimings.filter(t => !t.correct).length;
   const html = `
     <h4>Session Insights</h4>
     <div>✅ Correct: <b>${state.correctCount} / ${total}</b></div>
     <div>⏱ Avg time per question: <b>${avg}s</b></div>
     <div>📈 Final streak: <b>${state.streak}</b></div>
-    ${weak ? `<div>⚠ Weak Trick: <b>${TRICKS[weak].name}</b> → Practice more</div>` : ''}
+    ${weak ? `<div>⚠ Weak Trick: <b>${escapeHtml(TRICKS[weak].name)}</b> → Practice more</div>` : ''}
     ${state.assistedCount ? `<div>🆘 Assisted: ${state.assistedCount}</div>` : ''}
     ${longest ? `<div style="margin-top:8px">🔬 Deep-dive: longest question took ${longest.elapsed.toFixed(1)}s —
-      <i>${TRICKS[longest.q.trickId].why}</i></div>` : ''}
+      <i>${escapeHtml(TRICKS[longest.q.trickId].why)}</i></div>` : ''}
+    <div class="summary-actions">
+      ${wrongCount ? `<button class="btn primary" id="btn-review-wrong">↻ Review ${wrongCount} wrong</button>` : ''}
+      <button class="btn" id="btn-replay-same">▶ Replay same set</button>
+    </div>
   `;
   const ss = $('#session-summary');
   ss.innerHTML = html; ss.classList.remove('hidden');
   $('#q-column').innerHTML = `<div class="empty-state">🎉 Session complete! See insights below.</div>`;
+  // Wire the new buttons after we wrote the HTML
+  $('#btn-review-wrong')?.addEventListener('click', reviewWrongAnswers);
+  $('#btn-replay-same')?.addEventListener('click', replaySameSet);
+}
+
+function reviewWrongAnswers() {
+  const wrong = state.questionTimings.filter(t => !t.correct).map(t => t.q);
+  if (!wrong.length) { toast('No wrong answers to review'); return; }
+  state.allQuestions = wrong;
+  state.currentQIndex = 0;
+  state.score = 0; state.streak = 0;
+  state.correctCount = 0; state.wrongCount = 0;
+  state.assistedCount = 0;
+  state.questionTimings = [];
+  state.sessionStart = Date.now();
+  state.currentExerciseTitle = `Review wrong (${wrong.length})`;
+  setNowPracticing(state.currentExerciseTitle);
+  startTimer();
+  updatePills();
+  loadQuestion();
+  emitSession();
+  toast(`▶ Reviewing ${wrong.length} question${wrong.length > 1 ? 's' : ''}`);
+}
+
+function replaySameSet() {
+  // Re-run the same questions in fresh state
+  const sameSet = state.questionTimings.map(t => t.q);
+  if (!sameSet.length) { toast('Nothing to replay'); return; }
+  state.allQuestions = sameSet;
+  state.currentQIndex = 0;
+  state.score = 0; state.streak = 0;
+  state.correctCount = 0; state.wrongCount = 0;
+  state.assistedCount = 0;
+  state.questionTimings = [];
+  state.sessionStart = Date.now();
+  setNowPracticing(state.currentExerciseTitle);
+  startTimer();
+  updatePills();
+  loadQuestion();
+  emitSession();
+  toast(`▶ Replaying ${sameSet.length} questions`);
 }
 
 // =============== TIMER & PILLS ===============
@@ -1639,6 +1718,74 @@ function setNowPracticing(title) {
   el.textContent = `▶ ${title}`;
 }
 
+// =============== AUTONOMOUS: [ORDER-2] LOCAL SESSION SAVE/RESTORE ===============
+// Practice state is held in memory; an accidental refresh wipes everything mid
+// session. Auto-snapshot to localStorage and offer to resume on next load.
+const LS_KEY = 'abacus-current-session-v1';
+const LS_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+function saveLocalSession() {
+  if (!state.allQuestions.length) return;
+  if (state.currentQIndex >= state.allQuestions.length) return; // already complete
+  try {
+    const payload = {
+      v: 1, savedAt: Date.now(),
+      title: state.currentExerciseTitle,
+      allQuestions: state.allQuestions,
+      currentQIndex: state.currentQIndex,
+      currentMode: state.currentMode,
+      score: state.score, streak: state.streak,
+      correctCount: state.correctCount, wrongCount: state.wrongCount,
+      assistedCount: state.assistedCount,
+      sessionStart: state.sessionStart,
+      questionTimings: state.questionTimings.map(t => ({
+        // q is structurally JSON-safe (start, ops, answer, trickId)
+        q: t.q, elapsed: t.elapsed, correct: t.correct,
+      })),
+      rowsPerQuestion: state.rowsPerQuestion,
+      rowIntervalMs: state.rowIntervalMs,
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  } catch (_) {}
+}
+function clearLocalSession() {
+  try { localStorage.removeItem(LS_KEY); } catch (_) {}
+}
+function tryShowRestoreBanner() {
+  let p = null;
+  try { p = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (_) {}
+  if (!p || p.v !== 1 || !Array.isArray(p.allQuestions) || !p.allQuestions.length) return;
+  if (p.currentQIndex >= p.allQuestions.length) { clearLocalSession(); return; }
+  if (Date.now() - (p.savedAt || 0) > LS_TTL_MS) { clearLocalSession(); return; }
+  const banner = $('#restore-banner');
+  if (!banner) return;
+  const total = (p.correctCount || 0) + (p.wrongCount || 0);
+  $('#restore-summary').textContent = `${p.title || 'practice'} — Q ${(p.currentQIndex || 0) + 1} of ${p.allQuestions.length} (${p.correctCount || 0}/${total} correct)`;
+  banner.classList.remove('hidden');
+  $('#btn-restore-yes').onclick = () => { restoreLocalSession(p); banner.classList.add('hidden'); };
+  $('#btn-restore-no').onclick = () => { clearLocalSession(); banner.classList.add('hidden'); };
+}
+function restoreLocalSession(p) {
+  state.allQuestions = p.allQuestions;
+  state.currentQIndex = p.currentQIndex || 0;
+  state.currentMode = p.currentMode || 'guided';
+  state.score = p.score || 0;
+  state.streak = p.streak || 0;
+  state.correctCount = p.correctCount || 0;
+  state.wrongCount = p.wrongCount || 0;
+  state.assistedCount = p.assistedCount || 0;
+  state.questionTimings = (p.questionTimings || []).map(t => ({ q: t.q, elapsed: t.elapsed, correct: t.correct }));
+  state.sessionStart = p.sessionStart || Date.now();
+  state.currentExerciseTitle = p.title || '';
+  state.rowsPerQuestion = p.rowsPerQuestion || state.rowsPerQuestion;
+  state.rowIntervalMs = p.rowIntervalMs ?? state.rowIntervalMs;
+  setNowPracticing(state.currentExerciseTitle);
+  startTimer();
+  updatePills();
+  loadQuestion();
+  toast(`▶ Resumed: Q ${state.currentQIndex + 1}/${state.allQuestions.length}`);
+}
+
 // =============== TAB SWITCHING ===============
 function switchPane(name) {
   state.activePane = name;
@@ -1646,6 +1793,21 @@ function switchPane(name) {
   $$('.tc-pane').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== name));
   if (name === 'progress') refreshProgressPanel();
   if (name === 'library') { renderLibraryCategoryTabs(); renderLibraryCards(); }
+}
+
+// AUTONOMOUS: [ORDER-2] live accuracy badge on the Progress tab so the tutor
+// sees how the student is doing without leaving the Library pane.
+function updateProgressTabBadge() {
+  const tab = document.querySelector('#tc-tabs .tc-tab[data-pane="progress"]');
+  if (!tab) return;
+  const total = state.correctCount + state.wrongCount;
+  if (!total) {
+    tab.innerHTML = '📊 Progress';
+    return;
+  }
+  const acc = Math.round((state.correctCount / total) * 100);
+  const cls = acc >= 80 ? 'tab-badge ok' : acc >= 50 ? 'tab-badge warn' : 'tab-badge bad';
+  tab.innerHTML = `📊 Progress <span class="${cls}">${acc}%</span>`;
 }
 
 // =============== PROGRESS PANEL ===============
@@ -1927,6 +2089,11 @@ function wireEvents() {
     else if (e.key === 'n' || e.key === 'N') { nextQuestion(); }
     else if (e.key === 'h' || e.key === 'H') { $('#btn-hint').click(); }
     else if (e.key === 'r' || e.key === 'R') { resetAbacus(); }
+    // AUTONOMOUS: [ORDER-2] Z to undo last bead move (also Ctrl/Cmd+Z)
+    else if (e.key === 'z' || e.key === 'Z' || ((e.ctrlKey || e.metaKey) && e.key === 'z')) {
+      e.preventDefault();
+      undoBeadMove();
+    }
     else if (e.key === 'Escape') { setSidebarOpen(false); }
   });
 
@@ -1953,6 +2120,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setConnStatus('offline');
   renderLibraryCategoryTabs();
   renderLibraryCards();
+  // AUTONOMOUS: [ORDER-2] offer to resume an interrupted session
+  tryShowRestoreBanner();
   // Give layout a frame then recompute positions (zone heights now known)
   requestAnimationFrame(() => updateAllBeadPositions());
 });

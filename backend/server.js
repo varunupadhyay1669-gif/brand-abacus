@@ -18,6 +18,30 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '256kb' }));
 
+// AUTONOMOUS: [ORDER-1] defense-in-depth security headers. Server-side input
+// validation is the primary XSS defense; CSP is a second line that limits
+// blast radius if an unsanitized field slips through. unsafe-inline on style-src
+// is unavoidable here because the bead positioning sets `style="transform:..."`
+// inline on every render. script-src does NOT allow unsafe-inline.
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' https://cdn.socket.io",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data:",
+    "connect-src 'self' ws: wss:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
 // Serve frontend statics from repo root
 app.use(express.static(ROOT));
 
