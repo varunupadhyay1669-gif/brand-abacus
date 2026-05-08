@@ -21,6 +21,7 @@
     <div class="pill"><span class="pill-label">Score</span><span id="pill-score">0</span></div>
     <div class="pill"><span class="pill-label">Streak</span><span id="pill-streak">0</span></div>
     <div class="pill"><span class="pill-label">Time</span><span id="pill-timer">00:00</span></div>
+    <button id="btn-toggle-whiteboard" class="icon-btn" title="Whiteboard — paste question images (Ctrl/Cmd+V)">📋</button>
     <button id="btn-toggle-sound" class="icon-btn" title="Toggle sound">🔊</button>
     <span id="conn-pill" class="conn-pill conn-offline" title="Connection status">⚪ Offline</span>
     <button id="btn-open-sidebar" class="icon-btn" title="Formula Reference (F)">📘</button>
@@ -88,6 +89,26 @@
         </div>
         <div class="abacus-frame abacus-frame-mirror" id="abacus-frame-2"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- WHITEBOARD — paste-image side panel for question sheets -->
+  <section class="whiteboard glass hidden" id="whiteboard">
+    <div class="wb-header">
+      <h3>📋 Question Whiteboard</h3>
+      <span class="wb-hint" id="wb-hint">Press <kbd>Ctrl</kbd>+<kbd>V</kbd> to paste a screenshot · drag &amp; drop also works</span>
+      <div class="wb-actions">
+        <button class="btn sm" id="btn-wb-clear" title="Clear all pasted images">🗑 Clear</button>
+        <button class="icon-btn" id="btn-wb-close" title="Close whiteboard">✕</button>
+      </div>
+    </div>
+    <div class="wb-paste-zone" id="wb-paste-zone" tabindex="0">
+      <div class="wb-empty" id="wb-empty">
+        <div class="wb-empty-icon">📋</div>
+        <div class="wb-empty-text">Paste question images here</div>
+        <div class="wb-empty-sub">Copy a screenshot, then click anywhere in this panel and press <kbd>Ctrl</kbd>+<kbd>V</kbd> (or <kbd>⌘</kbd>+<kbd>V</kbd>)</div>
+      </div>
+      <div class="wb-grid" id="wb-grid"></div>
     </div>
   </section>
 

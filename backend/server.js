@@ -63,8 +63,14 @@ function defaultState() {
     mirrorMode: false,
     teacherBeads: [],
     studentBeads: [],
+    // WHITEBOARD — pasted question images shared with the student.
+    whiteboardOpen: false,
+    whiteboardImages: [], // [{ id, src, w, h, addedAt }], capped to MAX_WB_IMAGES
   };
 }
+
+const MAX_WB_IMAGES = 5;
+const MAX_WB_BYTES_PER_IMG = 700 * 1024; // ~700KB compressed/base64
 
 // AUTONOMOUS: [ORDER-1] C5 — serialize log writes through a single-flight queue
 // so concurrent POSTs don't read-modify-write over each other. Atomic via
@@ -259,7 +265,13 @@ function summarizeSessions(sessions) {
 }
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+// Bump max payload so pasted (compressed) question images go through. Default
+// is 1MB which is too tight; we cap individual images to ~700KB but also leave
+// headroom for occasional larger uncompressed images / state snapshots.
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 5 * 1024 * 1024,
+});
 
 io.on('connection', (socket) => {
   let joinedCode = null;
@@ -506,6 +518,61 @@ io.on('connection', (socket) => {
       beadsState: data && data.beadsState,
       rodCount: r.state.rodCount,
     });
+    ack(cb, { ok: true });
+  });
+
+  // ---- WHITEBOARD: paste-image side panel for question sheets ----
+  // Teacher-authoritative: only the teacher can add/remove/clear/toggle.
+  function isDataUrlImage(s) {
+    return typeof s === 'string' && /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(s);
+  }
+  socket.on('whiteboard-add', ({ src, w, h } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (!isDataUrlImage(src)) return ack(cb, { ok: false, error: 'bad_image' });
+    if (src.length > MAX_WB_BYTES_PER_IMG) return ack(cb, { ok: false, error: 'too_large' });
+    const img = {
+      id: crypto.randomBytes(6).toString('hex'),
+      src,
+      w: clampNum(w, 1, 8000),
+      h: clampNum(h, 1, 8000),
+      addedAt: Date.now(),
+    };
+    r.state.whiteboardImages.push(img);
+    if (r.state.whiteboardImages.length > MAX_WB_IMAGES) r.state.whiteboardImages.shift();
+    r.state.whiteboardOpen = true;
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-add', img);
+    io.to(joinedCode).emit('whiteboard-toggle', { open: true });
+    ack(cb, { ok: true, id: img.id });
+  });
+
+  socket.on('whiteboard-remove', ({ id } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    const before = r.state.whiteboardImages.length;
+    r.state.whiteboardImages = r.state.whiteboardImages.filter(i => i.id !== id);
+    if (r.state.whiteboardImages.length === before) return ack(cb, { ok: false, error: 'not_found' });
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-remove', { id });
+    ack(cb, { ok: true });
+  });
+
+  socket.on('whiteboard-clear', (_data, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    r.state.whiteboardImages = [];
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-clear', {});
+    ack(cb, { ok: true });
+  });
+
+  socket.on('whiteboard-toggle', ({ open } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    r.state.whiteboardOpen = !!open;
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-toggle', { open: r.state.whiteboardOpen });
     ack(cb, { ok: true });
   });
 

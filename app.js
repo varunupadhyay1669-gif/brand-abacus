@@ -68,6 +68,9 @@ const state = {
   // When off (default), state.beadsState is the shared single abacus.
   mirrorMode: false,
   otherBeads: [],
+  // WHITEBOARD — paste-image side panel synced across the room
+  whiteboardOpen: false,
+  whiteboardImages: [], // [{ id, src, w, h, addedAt }]
 };
 const MAX_BEAD_HISTORY = 30;
 
@@ -1306,6 +1309,186 @@ function toggleMirrorMode() {
   state.socket.emit('set-mirror-mode', { on: !state.mirrorMode });
 }
 
+// =============== WHITEBOARD (paste-image side panel) ===============
+const WB_MAX_IMAGES = 5;
+const WB_MAX_WIDTH = 1400;
+const WB_QUALITY = 0.78;
+
+function canEditWhiteboard() {
+  // Solo users (not in a room) edit freely. In a room: teacher only.
+  return !state.isInRoom || state.role === 'teacher';
+}
+
+function setWhiteboardOpen(open, opts = {}) {
+  state.whiteboardOpen = !!open;
+  document.body.classList.toggle('whiteboard-on', state.whiteboardOpen);
+  const panel = document.getElementById('whiteboard');
+  if (panel) panel.classList.toggle('hidden', !state.whiteboardOpen);
+  // Reflect read-only on the student
+  document.body.classList.toggle('wb-readonly', state.isInRoom && state.role === 'student');
+  if (state.whiteboardOpen) {
+    document.getElementById('wb-paste-zone')?.focus();
+  }
+  // Broadcast unless suppressed (incoming server event sets opts.fromServer=true)
+  if (!opts.fromServer && state.isInRoom && state.role === 'teacher' && state.socket) {
+    state.socket.emit('whiteboard-toggle', { open: state.whiteboardOpen });
+  }
+}
+
+function toggleWhiteboard() {
+  setWhiteboardOpen(!state.whiteboardOpen);
+}
+
+// Compress a File/Blob into a base64 JPEG data URL. Caps width and quality.
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, WB_MAX_WIDTH / img.width);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; // flatten alpha so JPEG doesn't render black
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', WB_QUALITY);
+        URL.revokeObjectURL(url);
+        resolve({ src: dataUrl, w, h });
+      } catch (e) { reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
+    img.src = url;
+  });
+}
+
+async function addWhiteboardImageFromFile(file) {
+  if (!file || !file.type || !file.type.startsWith('image/')) return false;
+  if (!canEditWhiteboard()) {
+    toast('Only the teacher can add images to the whiteboard');
+    return false;
+  }
+  try {
+    const { src, w, h } = await compressImage(file);
+    if (src.length > 700 * 1024) {
+      // Try once more with harsher compression
+      toast('Image too large — try a smaller screenshot');
+      return false;
+    }
+    if (state.isInRoom && state.role === 'teacher' && state.socket) {
+      state.socket.emit('whiteboard-add', { src, w, h }, (resp) => {
+        if (!resp || !resp.ok) {
+          toast('Whiteboard add failed: ' + (resp?.error || 'unknown'));
+        }
+      });
+    } else {
+      // Solo: render locally, no broadcast
+      const img = { id: 'local-' + Date.now() + '-' + Math.floor(Math.random() * 1e6), src, w, h };
+      state.whiteboardImages.push(img);
+      if (state.whiteboardImages.length > WB_MAX_IMAGES) state.whiteboardImages.shift();
+      setWhiteboardOpen(true);
+      renderWhiteboard();
+    }
+    return true;
+  } catch (e) {
+    toast('Could not read image');
+    return false;
+  }
+}
+
+function removeWhiteboardImage(id) {
+  if (!canEditWhiteboard()) return;
+  if (state.isInRoom && state.socket) {
+    state.socket.emit('whiteboard-remove', { id });
+  } else {
+    state.whiteboardImages = state.whiteboardImages.filter(i => i.id !== id);
+    renderWhiteboard();
+  }
+}
+
+function clearWhiteboard() {
+  if (!canEditWhiteboard()) return;
+  if (state.isInRoom && state.socket) {
+    state.socket.emit('whiteboard-clear', {});
+  } else {
+    state.whiteboardImages = [];
+    renderWhiteboard();
+  }
+}
+
+function renderWhiteboard() {
+  const grid = document.getElementById('wb-grid');
+  const empty = document.getElementById('wb-empty');
+  if (!grid || !empty) return;
+  if (!state.whiteboardImages.length) {
+    grid.innerHTML = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+  grid.innerHTML = '';
+  state.whiteboardImages.forEach(img => {
+    const card = document.createElement('div');
+    card.className = 'wb-img-card';
+    card.innerHTML = `
+      <img alt="Pasted question" loading="lazy" />
+      <button class="wb-remove" title="Remove">✕</button>
+    `;
+    // Set src via property assignment so we don't HTML-escape a base64 string
+    card.querySelector('img').src = img.src;
+    card.querySelector('.wb-remove').addEventListener('click', () => removeWhiteboardImage(img.id));
+    grid.appendChild(card);
+  });
+}
+
+async function whiteboardPasteHandler(e) {
+  // Only handle paste when our panel is the focus context, OR the panel is open
+  if (!state.whiteboardOpen) return;
+  if (!canEditWhiteboard()) return;
+  const items = (e.clipboardData || {}).items || [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      e.preventDefault();
+      const blob = item.getAsFile();
+      if (blob) await addWhiteboardImageFromFile(blob);
+      return;
+    }
+  }
+}
+
+function whiteboardDropHandler(e) {
+  e.preventDefault();
+  const zone = document.getElementById('wb-paste-zone');
+  zone?.classList.remove('dragover');
+  if (!canEditWhiteboard()) return;
+  const files = (e.dataTransfer && e.dataTransfer.files) ? Array.from(e.dataTransfer.files) : [];
+  for (const f of files) addWhiteboardImageFromFile(f);
+}
+
+function wireWhiteboard() {
+  const btn = document.getElementById('btn-toggle-whiteboard');
+  if (btn) btn.addEventListener('click', toggleWhiteboard);
+  document.getElementById('btn-wb-close')?.addEventListener('click', () => setWhiteboardOpen(false));
+  document.getElementById('btn-wb-clear')?.addEventListener('click', () => {
+    if (!state.whiteboardImages.length) return;
+    if (confirm(`Clear ${state.whiteboardImages.length} image${state.whiteboardImages.length > 1 ? 's' : ''}?`)) clearWhiteboard();
+  });
+  // Global paste — works regardless of focus when whiteboard is open
+  window.addEventListener('paste', whiteboardPasteHandler);
+  // Drag-drop onto the paste zone
+  const zone = document.getElementById('wb-paste-zone');
+  if (zone) {
+    ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
+      e.preventDefault(); zone.classList.add('dragover');
+    }));
+    ['dragleave', 'dragend'].forEach(ev => zone.addEventListener(ev, () => zone.classList.remove('dragover')));
+    zone.addEventListener('drop', whiteboardDropHandler);
+  }
+}
+
 // =============== DEMO REPLAY (animated solution playback) ===============
 async function playDemoForCurrentQuestion() {
   if (state.demoPlaying) return;
@@ -1503,6 +1686,26 @@ function initSocket() {
     updateMirrorAbacus();
   });
 
+  // ---- WHITEBOARD events (synced across the room) ----
+  s.on('whiteboard-add', (img) => {
+    if (!img || !img.src) return;
+    state.whiteboardImages.push(img);
+    if (state.whiteboardImages.length > WB_MAX_IMAGES) state.whiteboardImages.shift();
+    setWhiteboardOpen(true, { fromServer: true });
+    renderWhiteboard();
+  });
+  s.on('whiteboard-remove', ({ id } = {}) => {
+    state.whiteboardImages = state.whiteboardImages.filter(i => i.id !== id);
+    renderWhiteboard();
+  });
+  s.on('whiteboard-clear', () => {
+    state.whiteboardImages = [];
+    renderWhiteboard();
+  });
+  s.on('whiteboard-toggle', ({ open } = {}) => {
+    setWhiteboardOpen(!!open, { fromServer: true });
+  });
+
   // Student → teacher: "I'm stuck, show me"
   s.on('request-demo', () => {
     if (state.role !== 'teacher') return;
@@ -1671,6 +1874,12 @@ function joinRoom(code) {
           studentBeads: resp.state.studentBeads,
         });
       }
+      // WHITEBOARD: rehydrate images and panel state for late joiners
+      if (Array.isArray(resp.state.whiteboardImages) && resp.state.whiteboardImages.length) {
+        state.whiteboardImages = resp.state.whiteboardImages;
+        renderWhiteboard();
+      }
+      if (resp.state.whiteboardOpen) setWhiteboardOpen(true, { fromServer: true });
     }
   });
 }
@@ -1684,6 +1893,7 @@ function enterRoom(code, role) {
   $('#room-code-display').textContent = code;
   $('#role-pill').textContent = role === 'teacher' ? 'Teacher' : 'Student';
   document.body.classList.toggle('student-mode', role === 'student');
+  document.body.classList.toggle('wb-readonly', role === 'student');
   if (role === 'teacher') state.studentLocked = true; // freshly created room
   renderLockState();
   toast(role === 'teacher' ? `Room ${code} created` : `Joined room ${code}`);
@@ -1695,6 +1905,7 @@ function leaveRoom() {
   $('#room-bar-idle').classList.remove('hidden');
   $('#room-bar-connected').classList.add('hidden');
   document.body.classList.remove('student-mode');
+  document.body.classList.remove('wb-readonly');
 }
 
 function emitBeadSync() {
@@ -2299,6 +2510,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setConnStatus('offline');
   renderLibraryCategoryTabs();
   renderLibraryCards();
+  wireWhiteboard();
   // AUTONOMOUS: [ORDER-2] offer to resume an interrupted session
   tryShowRestoreBanner();
   // Give layout a frame then recompute positions (zone heights now known)
