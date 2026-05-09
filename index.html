@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=3" />
+<link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
 
@@ -237,6 +237,10 @@
           <input type="checkbox" id="chk-listening-mode" checked />
           🎧 Listening
         </label>
+        <label class="inline-label" title="Wait for the student to perform each operation on the abacus before playing the next step">
+          <input type="checkbox" id="chk-auto-advance" checked />
+          🤖 Auto
+        </label>
         <button class="btn sm" id="btn-dict-prev" title="Go back to the previous spoken step and replay it">⏮ Prev</button>
         <button class="btn sm" id="btn-dict-play">▶ Play</button>
         <button class="btn sm" id="btn-dict-pause">⏸</button>
@@ -288,6 +292,12 @@
   <div class="formula-list" id="formula-list"></div>
 </aside>
 
+<!-- AUDIO PROMPT — shown until the student taps once to unlock TTS -->
+<div id="audio-prompt" class="audio-prompt glass hidden">
+  <span class="ap-icon">🔊</span>
+  <span class="ap-text"><b>Tap anywhere</b> to enable audio for the listening practice</span>
+</div>
+
 <!-- RESUME BANNER -->
 <div id="restore-banner" class="restore-banner glass hidden">
   <span class="rb-icon">📂</span>
@@ -301,6 +311,6 @@
 <canvas id="confetti"></canvas>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

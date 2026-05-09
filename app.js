@@ -76,6 +76,17 @@ const state = {
   listeningMode: true,
   dictationStep: -1,
   dictationActive: false,
+  // AUTO-ADVANCE (autonomous teaching) — when on, the dictation engine
+  // pauses after each spoken step and only advances once the abacus value
+  // matches the expected running total for that step. So the audio waits
+  // for the student to actually perform each operation, with no teacher
+  // clicking required.
+  autoAdvance: true,
+  expectedTotals: [],
+  // TTS unlock — speechSynthesis is locked until a user gesture in many
+  // browsers; the student never gestures (the teacher clicked Play
+  // remotely), so audio is silent. We prime once on the first interaction.
+  ttsPrimed: false,
 };
 const MAX_BEAD_HISTORY = 30;
 
@@ -1088,12 +1099,87 @@ function currentDictationSeq() {
   return [q.start.toString(), ...q.ops.map(o => (o.op === '+' ? 'plus ' : 'minus ') + o.n)];
 }
 
+// Running total at each step: expectedTotals[i] is what the abacus should
+// read after step i has been performed. Used by auto-advance.
+function computeExpectedTotals(q) {
+  if (!q) return [];
+  const totals = [q.start];
+  let cur = q.start;
+  for (const op of q.ops) {
+    cur = op.op === '+' ? cur + op.n : cur - op.n;
+    totals.push(cur);
+  }
+  return totals;
+}
+
+// Poll the abacus value until it matches `expected`, then resolve. Bails out
+// on pause, on a 5-minute timeout, or if the student leaves the question.
+function waitForAbacusMatch(expected) {
+  return new Promise((resolve) => {
+    const startQIndex = state.currentQIndex;
+    let elapsed = 0;
+    const POLL = 120;
+    const MAX = 5 * 60 * 1000;
+    const tick = () => {
+      if (state.dictationPaused) return resolve();
+      if (state.currentQIndex !== startQIndex) return resolve(); // moved on
+      if (state.abacusValue === expected) {
+        // Match — brief grace period so the student feels the click then advance
+        setTimeout(resolve, 700);
+        return;
+      }
+      if (elapsed >= MAX) return resolve();
+      elapsed += POLL;
+      setTimeout(tick, POLL);
+    };
+    tick();
+  });
+}
+
+// =============== TTS UNLOCK (browser autoplay policy) ===============
+// Browsers (especially mobile / Safari / strict Chrome) lock SpeechSynthesis
+// until a user gesture. The student never gestures — the teacher clicks Play
+// from THEIR side — so the student's audio is silent. We prime once on the
+// student's first pointerdown / keydown / touchstart, which makes every
+// subsequent speakText audible.
+function primeTTSOnce() {
+  if (state.ttsPrimed) return;
+  if (!('speechSynthesis' in window)) { state.ttsPrimed = true; hideAudioPrompt(); return; }
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    u.rate = 1;
+    speechSynthesis.speak(u);
+    state.ttsPrimed = true;
+    hideAudioPrompt();
+  } catch (_) {
+    state.ttsPrimed = true;
+    hideAudioPrompt();
+  }
+}
+function showAudioPrompt() {
+  if (state.ttsPrimed) return;
+  document.getElementById('audio-prompt')?.classList.remove('hidden');
+}
+function hideAudioPrompt() {
+  document.getElementById('audio-prompt')?.classList.add('hidden');
+}
+function wireTTSPrimer() {
+  const handler = () => primeTTSOnce();
+  // capture+once so the very first gesture anywhere unlocks audio
+  ['pointerdown', 'touchstart', 'keydown'].forEach(ev => {
+    window.addEventListener(ev, handler, { once: true, capture: true });
+  });
+}
+
 // =============== DICTATION ENGINE (rewritten for listening practice) ===============
 // Pressing Play resumes from the last paused step, or starts from 0 after a
 // fresh load / completion. Each iteration: reveal row → speak → wait inter-row.
 async function playDictation(startIdx = null) {
   const seq = currentDictationSeq();
   if (!seq) return;
+  const q = state.allQuestions[state.currentQIndex];
+  state.expectedTotals = computeExpectedTotals(q);
   // Cancel any pending utterances first — a second click of Play used to stack
   try { speechSynthesis.cancel(); } catch (_) {}
   // Resolve the starting index
@@ -1106,8 +1192,17 @@ async function playDictation(startIdx = null) {
     i = state.dictationStep + 1; // resume from where pause/prev left off
   }
   // If starting at the very beginning, hide all rows so the reveal happens
-  // strictly in sync with audio.
-  if (i === 0) hideAllSteps();
+  // strictly in sync with audio. In autonomous mode (auto-advance + non-mirror)
+  // also reset the abacus so the student can count up from zero.
+  if (i === 0) {
+    hideAllSteps();
+    if (state.autoAdvance && !state.mirrorMode) {
+      pushBeadHistory();
+      initBeadsState(state.rodCount);
+      updateAllBeadPositions();
+      emitBeadSync();
+    }
+  }
   state.dictationPaused = false;
   state.dictationActive = true;
   const interRow = Math.max(0, +state.rowIntervalMs || 0);
@@ -1125,7 +1220,18 @@ async function playDictation(startIdx = null) {
     highlightDictRow(i);
     emitDictationStep(i);
     await speakText(seq[i], state.dictationLang, state.dictationSpeed);
-    if (interRow && i < seq.length - 1) await sleep(interRow);
+    if (i < seq.length - 1) {
+      // AUTONOMOUS TEACHING: hold here until the student actually performs
+      // the operation on the abacus. Once their value matches the expected
+      // running total, the loop advances automatically. Falls back to the
+      // fixed inter-row timer in mirror mode (where the student's abacus
+      // isn't readable from this loop) or when auto-advance is off.
+      if (state.autoAdvance && !state.mirrorMode && state.expectedTotals[i] !== undefined) {
+        await waitForAbacusMatch(state.expectedTotals[i]);
+      } else if (interRow) {
+        await sleep(interRow);
+      }
+    }
   }
   clearDictRowHighlight();
   state.dictationActive = false;
@@ -1749,6 +1855,7 @@ function initSocket() {
     state.currentQIndex = data.currentQIndex || 0;
     state.currentMode = data.currentMode || state.currentMode;
     if (data.listeningMode !== undefined) state.listeningMode = !!data.listeningMode;
+    if (data.autoAdvance !== undefined) state.autoAdvance = !!data.autoAdvance;
     if (state.role === 'student') loadQuestion();
   });
   s.on('student-joined', () => toast('👥 Student joined'));
@@ -1856,6 +1963,10 @@ function initSocket() {
     const seq = currentDictationSeq();
     if (seq && seq[step]) {
       try { speechSynthesis.cancel(); } catch (_) {}
+      // Browsers lock speechSynthesis until a user gesture. If the student
+      // hasn't tapped yet, the speak() call won't actually produce sound —
+      // surface the audio-enable prompt so they can unlock it.
+      if (!state.ttsPrimed) showAudioPrompt();
       speakText(seq[step], state.dictationLang, state.dictationSpeed);
     }
   });
@@ -2050,6 +2161,9 @@ function enterRoom(code, role) {
   document.body.classList.toggle('wb-readonly', role === 'student');
   if (role === 'teacher') state.studentLocked = true; // freshly created room
   renderLockState();
+  // Student needs a tap to unlock audio (browser autoplay policy). Show the
+  // prompt; it auto-clears the moment they touch anything on the page.
+  if (role === 'student' && !state.ttsPrimed) showAudioPrompt();
   toast(role === 'teacher' ? `Room ${code} created` : `Joined room ${code}`);
 }
 
@@ -2087,6 +2201,7 @@ function emitSession() {
     currentQIndex: state.currentQIndex,
     currentMode: state.currentMode,
     listeningMode: state.listeningMode,
+    autoAdvance: state.autoAdvance,
   });
 }
 
@@ -2505,6 +2620,10 @@ function wireEvents() {
     // Reflect to the student via session-update so their reveals match
     if (state.isInRoom && state.role === 'teacher') emitSession();
   });
+  $('#chk-auto-advance').addEventListener('change', (e) => {
+    state.autoAdvance = !!e.target.checked;
+    if (state.isInRoom && state.role === 'teacher') emitSession();
+  });
 
   // Anzan / ghost-bead visibility (teacher controls; broadcasts to student)
   $('#sel-visibility').addEventListener('change', (e) => setVisibility(e.target.value));
@@ -2672,6 +2791,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderLibraryCategoryTabs();
   renderLibraryCards();
   wireWhiteboard();
+  wireTTSPrimer();
   // AUTONOMOUS: [ORDER-2] offer to resume an interrupted session
   tryShowRestoreBanner();
   // Give layout a frame then recompute positions (zone heights now known)
