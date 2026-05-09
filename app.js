@@ -71,6 +71,11 @@ const state = {
   // WHITEBOARD — paste-image side panel synced across the room
   whiteboardOpen: false,
   whiteboardImages: [], // [{ id, src, w, h, addedAt }]
+  // LISTENING PRACTICE — when on, future rows are hidden until their audio
+  // plays. dictationStep = highest index that has been spoken (-1 = none yet).
+  listeningMode: true,
+  dictationStep: -1,
+  dictationActive: false,
 };
 const MAX_BEAD_HISTORY = 30;
 
@@ -805,6 +810,12 @@ function loadQuestion() {
   $('#session-summary').classList.add('hidden');
   $('#inp-answer').value = '';
 
+  // Reset dictation step for the new question
+  state.dictationStep = -1;
+  state.dictationIdx = 0;
+  state.dictationPaused = false;
+  state.dictationActive = false;
+
   if (!q) { showSummary(); return; }
 
   state.currentTrickId = q.trickId;
@@ -819,6 +830,10 @@ function loadQuestion() {
     lines.push(`<div class="q-num ${cls}">${o.op}${o.n}</div>`);
   });
   col.innerHTML = lines.join('');
+  // LISTENING PRACTICE — start with all upcoming numbers hidden so the
+  // student can't preview the question. Each row is revealed only when
+  // its audio plays (see playDictation / previousStep).
+  if (state.listeningMode) hideAllSteps();
   $('#qpos').textContent = `Q ${state.currentQIndex+1} / ${state.allQuestions.length}`;
 
   const tag = $('#trick-tag');
@@ -898,7 +913,11 @@ function checkAnswer() {
 function nextQuestion() {
   // AUTONOMOUS: [ORDER-1] C7 — flush any in-flight dictation so the next
   // question doesn't get spoken with leftover utterances from the previous.
+  // Also set dictationPaused so the active play loop bails on its next tick
+  // (otherwise it would keep emitting reveals for the new question).
   try { speechSynthesis.cancel(); } catch (_) {}
+  state.dictationPaused = true;
+  state.dictationActive = false;
   clearDictRowHighlight();
   state.currentQIndex += 1;
   if (state.currentQIndex >= state.allQuestions.length) showSummary();
@@ -1037,31 +1056,150 @@ function speakText(text, lang, rate) {
   });
 }
 
-async function playDictation(startIdx = 0) {
+// =============== LISTENING PRACTICE — reveal helpers ===============
+// Future rows are hidden (lp-hidden) until their audio is spoken. revealStep(i)
+// uncovers row i. revealUpTo(i) uncovers 0..i and re-hides everything after
+// (used when going BACK so the student can't see what's coming).
+function revealStep(i) {
+  if (!state.listeningMode) {
+    document.querySelectorAll('#q-column .q-num.lp-hidden').forEach(el => el.classList.remove('lp-hidden'));
+    return;
+  }
+  const rows = document.querySelectorAll('#q-column .q-num');
+  if (rows[i]) rows[i].classList.remove('lp-hidden');
+}
+function revealUpTo(i) {
+  const rows = document.querySelectorAll('#q-column .q-num');
+  rows.forEach((el, idx) => {
+    el.classList.toggle('lp-hidden', state.listeningMode && idx > i);
+  });
+}
+function hideAllSteps() {
+  if (!state.listeningMode) return;
+  document.querySelectorAll('#q-column .q-num').forEach(el => el.classList.add('lp-hidden'));
+}
+function emitDictationStep(step) {
+  if (!state.isInRoom || !state.socket || state.role !== 'teacher') return;
+  state.socket.emit('dictation-step', { step });
+}
+function currentDictationSeq() {
   const q = state.allQuestions[state.currentQIndex];
-  if (!q) return;
-  // AUTONOMOUS: [ORDER-1] C7 — cancel any pending utterances so a second
-  // click on Play doesn't stack onto the previous run. Without this, the
-  // pause/repeat/play state machine drifts into a confused state.
+  if (!q) return null;
+  return [q.start.toString(), ...q.ops.map(o => (o.op === '+' ? 'plus ' : 'minus ') + o.n)];
+}
+
+// =============== DICTATION ENGINE (rewritten for listening practice) ===============
+// Pressing Play resumes from the last paused step, or starts from 0 after a
+// fresh load / completion. Each iteration: reveal row → speak → wait inter-row.
+async function playDictation(startIdx = null) {
+  const seq = currentDictationSeq();
+  if (!seq) return;
+  // Cancel any pending utterances first — a second click of Play used to stack
   try { speechSynthesis.cancel(); } catch (_) {}
+  // Resolve the starting index
+  let i;
+  if (startIdx !== null && startIdx !== undefined) {
+    i = Math.max(0, Math.min(startIdx, seq.length - 1));
+  } else if (state.dictationStep < 0 || state.dictationStep >= seq.length - 1) {
+    i = 0; // fresh start (or restart after completion)
+  } else {
+    i = state.dictationStep + 1; // resume from where pause/prev left off
+  }
+  // If starting at the very beginning, hide all rows so the reveal happens
+  // strictly in sync with audio.
+  if (i === 0) hideAllSteps();
   state.dictationPaused = false;
-  const seq = [q.start.toString(), ...q.ops.map(o => (o.op === '+' ? 'plus ' : 'minus ') + o.n)];
-  state.dictationQueue = seq;
+  state.dictationActive = true;
   const interRow = Math.max(0, +state.rowIntervalMs || 0);
-  for (let i = startIdx; i < seq.length; i++) {
-    if (state.dictationPaused) { state.dictationIdx = i; clearDictRowHighlight(); return; }
+  for (; i < seq.length; i++) {
+    if (state.dictationPaused) {
+      state.dictationStep = i - 1;
+      state.dictationIdx = state.dictationStep;
+      clearDictRowHighlight();
+      state.dictationActive = false;
+      return;
+    }
+    state.dictationStep = i;
     state.dictationIdx = i;
+    revealStep(i);
     highlightDictRow(i);
+    emitDictationStep(i);
     await speakText(seq[i], state.dictationLang, state.dictationSpeed);
-    // Calibrated pause between rows so kids have time to move beads
     if (interRow && i < seq.length - 1) await sleep(interRow);
   }
   clearDictRowHighlight();
+  state.dictationActive = false;
 }
-function pauseDictation() { state.dictationPaused = true; try{speechSynthesis.cancel();}catch(_){} }
+
+function pauseDictation() {
+  state.dictationPaused = true;
+  state.dictationActive = false;
+  try { speechSynthesis.cancel(); } catch (_) {}
+}
+
+// Repeat the CURRENT step (don't advance). Speaks it again, doesn't touch reveals.
 function repeatRow() {
-  try { speechSynthesis.cancel(); } catch(_){}
-  playDictation(state.dictationIdx);
+  const seq = currentDictationSeq();
+  if (!seq) return;
+  if (state.dictationStep < 0) {
+    // Nothing has played — fall back to a fresh Play
+    return playDictation(0);
+  }
+  // Re-pause to stop any running loop, then speak the current step
+  pauseDictation();
+  setTimeout(() => {
+    state.dictationPaused = true; // stay paused after repeat
+    revealStep(state.dictationStep);
+    highlightDictRow(state.dictationStep);
+    emitDictationStep(state.dictationStep);
+    speakText(seq[state.dictationStep], state.dictationLang, state.dictationSpeed);
+  }, 30);
+}
+
+// "Go Back" — replay the previous spoken step. Hides everything after it so
+// the student can't peek at upcoming numbers.
+function previousStep() {
+  const seq = currentDictationSeq();
+  if (!seq) return;
+  // Stop whatever is currently running
+  pauseDictation();
+  // If nothing has been played yet, treat as no-op
+  if (state.dictationStep <= 0) {
+    if (state.dictationStep === 0) {
+      // We're already on step 0 — just replay it
+      setTimeout(() => {
+        revealUpTo(0);
+        highlightDictRow(0);
+        emitDictationStep(0);
+        speakText(seq[0], state.dictationLang, state.dictationSpeed);
+      }, 30);
+    } else {
+      toast('Nothing played yet');
+    }
+    return;
+  }
+  const newStep = state.dictationStep - 1;
+  state.dictationStep = newStep;
+  state.dictationIdx = newStep;
+  setTimeout(() => {
+    state.dictationPaused = true;
+    revealUpTo(newStep);   // re-hide everything after the new step
+    highlightDictRow(newStep);
+    emitDictationStep(newStep);
+    speakText(seq[newStep], state.dictationLang, state.dictationSpeed);
+  }, 30);
+}
+
+// User toggled the Listening Mode checkbox
+function setListeningMode(on) {
+  state.listeningMode = !!on;
+  if (!state.listeningMode) {
+    // Reveal everything
+    document.querySelectorAll('#q-column .q-num.lp-hidden').forEach(el => el.classList.remove('lp-hidden'));
+  } else {
+    // Re-hide whatever is past the current step
+    revealUpTo(state.dictationStep);
+  }
 }
 
 // =============== CUSTOM SEQUENCE ===============
@@ -1610,6 +1748,7 @@ function initSocket() {
     state.allQuestions = data.allQuestions || [];
     state.currentQIndex = data.currentQIndex || 0;
     state.currentMode = data.currentMode || state.currentMode;
+    if (data.listeningMode !== undefined) state.listeningMode = !!data.listeningMode;
     if (state.role === 'student') loadQuestion();
   });
   s.on('student-joined', () => toast('👥 Student joined'));
@@ -1704,6 +1843,21 @@ function initSocket() {
   });
   s.on('whiteboard-toggle', ({ open } = {}) => {
     setWhiteboardOpen(!!open, { fromServer: true });
+  });
+
+  // ---- LISTENING PRACTICE — teacher's dictation step driving student reveal/audio ----
+  s.on('dictation-step', ({ step } = {}) => {
+    if (typeof step !== 'number') return;
+    state.dictationStep = step;
+    state.dictationIdx = step;
+    revealUpTo(step); // reveal up to this step, hide anything after
+    highlightDictRow(step);
+    // Speak this step locally so the student hears audio in sync with reveal
+    const seq = currentDictationSeq();
+    if (seq && seq[step]) {
+      try { speechSynthesis.cancel(); } catch (_) {}
+      speakText(seq[step], state.dictationLang, state.dictationSpeed);
+    }
   });
 
   // Student → teacher: "I'm stuck, show me"
@@ -1932,6 +2086,7 @@ function emitSession() {
     allQuestions: state.allQuestions,
     currentQIndex: state.currentQIndex,
     currentMode: state.currentMode,
+    listeningMode: state.listeningMode,
   });
 }
 
@@ -2341,9 +2496,15 @@ function wireEvents() {
   $('#sel-speed').addEventListener('change', e => state.dictationSpeed = +e.target.value);
   $('#sel-lang').addEventListener('change', e => state.dictationLang = e.target.value);
   $('#sel-row-interval').addEventListener('change', e => state.rowIntervalMs = +e.target.value || 0);
-  $('#btn-dict-play').addEventListener('click', () => playDictation(0));
+  $('#btn-dict-play').addEventListener('click', () => playDictation()); // resume-or-restart
   $('#btn-dict-pause').addEventListener('click', pauseDictation);
   $('#btn-dict-repeat').addEventListener('click', repeatRow);
+  $('#btn-dict-prev').addEventListener('click', previousStep);
+  $('#chk-listening-mode').addEventListener('change', (e) => {
+    setListeningMode(!!e.target.checked);
+    // Reflect to the student via session-update so their reveals match
+    if (state.isInRoom && state.role === 'teacher') emitSession();
+  });
 
   // Anzan / ghost-bead visibility (teacher controls; broadcasts to student)
   $('#sel-visibility').addEventListener('change', (e) => setVisibility(e.target.value));

@@ -576,6 +576,18 @@ io.on('connection', (socket) => {
     ack(cb, { ok: true });
   });
 
+  // ---- LISTENING PRACTICE: teacher's dictation step → student reveal + TTS ----
+  // Each time the teacher's dictation engine advances/jumps to a step, we tell
+  // the student which row to reveal and they speak that step locally so audio
+  // stays in sync with the visible reveal. Teacher-only (no student override).
+  socket.on('dictation-step', (data, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    touch(joinedCode);
+    socket.to(joinedCode).emit('dictation-step', data || {});
+    ack(cb, { ok: true });
+  });
+
   // ---- Student → Teacher: "I'm stuck, show me" ----
   socket.on('request-demo', (data, cb) => {
     const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });

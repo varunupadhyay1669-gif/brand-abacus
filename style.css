@@ -657,11 +657,20 @@ body.student-mode.student-locked .bead{cursor:not-allowed}
 .abacus-frame.viz-hidden .crossbar{opacity:.25;transition:opacity .4s ease}
 
 /* CURRENT-ROW HIGHLIGHT during dictation */
+.q-column .q-num{
+  transition:opacity .3s ease, transform .25s cubic-bezier(.34,1.56,.64,1), color .2s, text-shadow .2s;
+}
 .q-column .q-num.dict-active{
   color:var(--accent-gold-2);
   text-shadow:0 0 18px rgba(253,224,71,.6);
   transform:scale(1.08);
-  transition:transform .25s cubic-bezier(.34,1.56,.64,1),color .2s,text-shadow .2s;
+}
+/* LISTENING PRACTICE — rows that haven't been spoken yet are hidden but
+   keep their layout space so the column doesn't jump as numbers reveal */
+.q-column .q-num.lp-hidden{
+  opacity:0;
+  pointer-events:none;
+  transform:translateY(-4px);
 }
 
 /* TWO-FINGER HINT ICON inside formula card */
