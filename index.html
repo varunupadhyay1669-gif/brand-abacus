@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=3" />
+<link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
 
@@ -21,6 +21,7 @@
     <div class="pill"><span class="pill-label">Score</span><span id="pill-score">0</span></div>
     <div class="pill"><span class="pill-label">Streak</span><span id="pill-streak">0</span></div>
     <div class="pill"><span class="pill-label">Time</span><span id="pill-timer">00:00</span></div>
+    <button id="btn-toggle-whiteboard" class="icon-btn" title="Whiteboard — paste question images (Ctrl/Cmd+V)">📋</button>
     <button id="btn-toggle-sound" class="icon-btn" title="Toggle sound">🔊</button>
     <span id="conn-pill" class="conn-pill conn-offline" title="Connection status">⚪ Offline</span>
     <button id="btn-open-sidebar" class="icon-btn" title="Formula Reference (F)">📘</button>
@@ -30,6 +31,7 @@
 <!-- ROOM BAR -->
 <section class="room-bar glass">
   <div class="room-bar-idle" id="room-bar-idle">
+    <input id="inp-student-name" class="input" placeholder="Student name (optional, for progress tracking)" />
     <button class="btn primary" id="btn-create-room">＋ Create Room</button>
     <div class="divider">or</div>
     <input id="inp-join-code" class="input" placeholder="Enter 6-char code" maxlength="6" />
@@ -65,19 +67,57 @@
         <input id="inp-set-value" class="input sm-input" type="number" min="0" placeholder="Set to…" />
         <button class="btn sm" id="btn-set-value">Set</button>
       </div>
-      <div class="value-display"><span class="vd-label">VALUE</span><span id="abacus-value">0</span></div>
+      <div class="abacus-header-right">
+        <span id="match-indicator" class="match-indicator hidden">⏳</span>
+        <div class="value-display"><span class="vd-label">VALUE</span><span id="abacus-value">0</span></div>
+      </div>
     </div>
-    <div class="abacus-frame" id="abacus-frame">
-      <!-- Rods injected by JS -->
-      <div id="teacher-pointer" class="teacher-pointer hidden"></div>
+    <div class="abacus-stack" id="abacus-stack">
+      <!-- Main abacus — yours (interactive) -->
+      <div class="abacus-pane" id="abacus-pane-main">
+        <div class="abacus-pane-label hidden" id="abacus-label-main"></div>
+        <div class="abacus-frame" id="abacus-frame">
+          <!-- Rods injected by JS -->
+          <div id="teacher-pointer" class="teacher-pointer hidden"></div>
+        </div>
+      </div>
+      <!-- Mirror abacus — the other person's (read-only). Only shown in mirror mode. -->
+      <div class="abacus-pane abacus-pane-mirror hidden" id="abacus-pane-mirror">
+        <div class="abacus-pane-label" id="abacus-label-mirror">Other</div>
+        <div class="value-display value-display-mirror">
+          <span class="vd-label">VALUE</span><span id="abacus-value-2">0</span>
+        </div>
+        <div class="abacus-frame abacus-frame-mirror" id="abacus-frame-2"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHITEBOARD — paste-image side panel for question sheets -->
+  <section class="whiteboard glass hidden" id="whiteboard">
+    <div class="wb-header">
+      <h3>📋 Question Whiteboard</h3>
+      <span class="wb-hint" id="wb-hint">Press <kbd>Ctrl</kbd>+<kbd>V</kbd> to paste a screenshot · drag &amp; drop also works</span>
+      <div class="wb-actions">
+        <button class="btn sm" id="btn-wb-clear" title="Clear all pasted images">🗑 Clear</button>
+        <button class="icon-btn" id="btn-wb-close" title="Close whiteboard">✕</button>
+      </div>
+    </div>
+    <div class="wb-paste-zone" id="wb-paste-zone" tabindex="0">
+      <div class="wb-empty" id="wb-empty">
+        <div class="wb-empty-icon">📋</div>
+        <div class="wb-empty-text">Paste question images here</div>
+        <div class="wb-empty-sub">Copy a screenshot, then click anywhere in this panel and press <kbd>Ctrl</kbd>+<kbd>V</kbd> (or <kbd>⌘</kbd>+<kbd>V</kbd>)</div>
+      </div>
+      <div class="wb-grid" id="wb-grid"></div>
     </div>
   </section>
 
   <!-- TEACHER CONTROLS -->
   <section class="teacher-controls glass">
-    <h3>Teacher Controls</h3>
+    <!-- Always-visible quick controls -->
     <div class="row sync-row">
       <button class="btn primary" id="btn-toggle-lock">🔓 Unlock Student</button>
+      <button class="btn sm" id="btn-toggle-mirror" title="Show two abacuses side by side — yours and the student's">🪞 Mirror</button>
       <label class="inline-label">Visibility
         <select id="sel-visibility" title="Anzan / ghost-bead mode for mental-math practice">
           <option value="full" selected>Full</option>
@@ -87,78 +127,125 @@
         </select>
       </label>
       <button class="btn sm" id="btn-demo-question" title="Animate the current question step-by-step">▶ Demo</button>
-      <span class="hint-text">Student is view-only by default. Anzan hides beads for mental math.</span>
+      <button class="btn sm" id="btn-save-log">💾 Save Session</button>
     </div>
-    <div class="row push-q-row">
-      <input class="input grow" id="inp-push-q" placeholder="Push a question to student (e.g. 7 + 5 = ?)" />
-      <button class="btn" id="btn-push-q">📤 Push to Student</button>
-      <button class="btn sm" id="btn-save-log">💾 Save Session Log</button>
+
+    <!-- Tabs -->
+    <div class="tc-tabs" id="tc-tabs">
+      <button class="tc-tab active" data-pane="library">📚 Lesson Library</button>
+      <button class="tc-tab" data-pane="progress">📊 Progress</button>
+      <button class="tc-tab" data-pane="advanced">⚙ Advanced</button>
     </div>
-    <div class="grid2">
-      <label>Level
-        <select id="sel-level"></select>
-      </label>
-      <label>Trick
-        <select id="sel-trick"></select>
-      </label>
-      <label>Mode
-        <select id="sel-mode">
-          <option value="guided">Guided (panel shown)</option>
-          <option value="recall">Recall (panel hidden)</option>
-          <option value="mixed" disabled>Mixed (locked)</option>
-        </select>
-      </label>
-      <label>Question Count
-        <input type="number" id="inp-qcount" min="1" max="50" value="10" />
-      </label>
-      <label>Rows per Question
-        <select id="sel-rows-per-q">
-          <option value="3">3 rows</option>
-          <option value="5" selected>5 rows</option>
-          <option value="7">7 rows</option>
-          <option value="10">10 rows</option>
-          <option value="15">15 rows</option>
-          <option value="20">20 rows</option>
-        </select>
-      </label>
+
+    <!-- LIBRARY PANE -->
+    <div class="tc-pane" data-pane="library" id="pane-library">
+      <div class="library-cat-tabs" id="library-cat-tabs"><!-- categories injected --></div>
+      <div class="library-cat-desc" id="library-cat-desc"></div>
+      <div class="library-cards" id="library-cards"><!-- exercise cards injected --></div>
     </div>
-    <div class="row">
-      <button class="btn primary" id="btn-generate">✨ Generate Practice</button>
-      <button class="btn" id="btn-custom-toggle">Custom Sequence</button>
+
+    <!-- PROGRESS PANE -->
+    <div class="tc-pane hidden" data-pane="progress" id="pane-progress">
+      <div class="progress-row">
+        <div class="prog-stat"><span class="prog-stat-label">Correct</span><span id="prog-correct">0/0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Accuracy</span><span id="prog-accuracy">—</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Avg time</span><span id="prog-avg">—</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Streak</span><span id="prog-streak">0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Assisted</span><span id="prog-assisted">0</span></div>
+        <div class="prog-stat"><span class="prog-stat-label">Weak trick</span><span id="prog-weak">—</span></div>
+      </div>
+      <div class="progress-history">
+        <div class="prog-history-header">
+          <h4>Past sessions</h4>
+          <button class="btn sm" id="btn-refresh-history">↻ Refresh</button>
+        </div>
+        <div id="prog-history-list" class="prog-history-list">
+          <div class="empty-state">No saved sessions yet. Click 💾 Save Session after a practice run.</div>
+        </div>
+      </div>
     </div>
-    <div class="row hidden" id="custom-row">
-      <input class="input grow" id="inp-custom" placeholder="e.g. 5+3-2+7" />
-      <button class="btn" id="btn-play-custom">▶ Step</button>
-    </div>
-    <div class="row">
-      <label>Dictation
-        <select id="sel-speed">
-          <option value="0.75">0.75x</option>
-          <option value="1" selected>1x</option>
-          <option value="1.5">1.5x</option>
-          <option value="2">2x</option>
-        </select>
-      </label>
-      <label>Voice
-        <select id="sel-lang">
-          <option value="en-IN">English (IN)</option>
-          <option value="hi-IN">Hindi</option>
-        </select>
-      </label>
-      <label>Pace per row
-        <select id="sel-row-interval" title="Pause between rows (calibrated for kids)">
-          <option value="0">Auto (TTS pace)</option>
-          <option value="3000">3.0s (Level 1–2)</option>
-          <option value="2500" selected>2.5s</option>
-          <option value="2000">2.0s (Level 3–4)</option>
-          <option value="1500">1.5s</option>
-          <option value="1000">1.0s (Level 5+)</option>
-          <option value="700">0.7s (speed)</option>
-        </select>
-      </label>
-      <button class="btn sm" id="btn-dict-play">▶ Play</button>
-      <button class="btn sm" id="btn-dict-pause">⏸</button>
-      <button class="btn sm" id="btn-dict-repeat">↻ Row</button>
+
+    <!-- ADVANCED PANE (manual / custom controls) -->
+    <div class="tc-pane hidden" data-pane="advanced" id="pane-advanced">
+      <div class="row push-q-row">
+        <input class="input grow" id="inp-push-q" placeholder="Push a free-text question to student (e.g. 7 + 5 = ?)" />
+        <button class="btn" id="btn-push-q">📤 Push to Student</button>
+      </div>
+      <div class="grid2">
+        <label>Level
+          <select id="sel-level"></select>
+        </label>
+        <label>Trick
+          <select id="sel-trick"></select>
+        </label>
+        <label>Mode
+          <select id="sel-mode">
+            <option value="guided">Guided (panel shown)</option>
+            <option value="recall">Recall (panel hidden)</option>
+            <option value="mixed" disabled>Mixed (locked)</option>
+          </select>
+        </label>
+        <label>Question Count
+          <input type="number" id="inp-qcount" min="1" max="50" value="10" />
+        </label>
+        <label>Rows per Question
+          <select id="sel-rows-per-q">
+            <option value="3">3 rows</option>
+            <option value="5" selected>5 rows</option>
+            <option value="7">7 rows</option>
+            <option value="10">10 rows</option>
+            <option value="15">15 rows</option>
+            <option value="20">20 rows</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btn-generate">✨ Generate Practice</button>
+        <button class="btn" id="btn-custom-toggle">Custom Sequence</button>
+      </div>
+      <div class="row hidden" id="custom-row">
+        <input class="input grow" id="inp-custom" placeholder="e.g. 5+3-2+7" />
+        <button class="btn" id="btn-play-custom">▶ Step</button>
+      </div>
+      <div class="row">
+        <label>Dictation
+          <select id="sel-speed">
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2x</option>
+          </select>
+        </label>
+        <label>Voice
+          <select id="sel-lang">
+            <option value="en-IN">English (IN)</option>
+            <option value="hi-IN">Hindi</option>
+          </select>
+        </label>
+        <label>Pace per row
+          <select id="sel-row-interval" title="Pause between rows (calibrated for kids)">
+            <option value="0">Auto (TTS pace)</option>
+            <option value="3000">3.0s (Level 1–2)</option>
+            <option value="2500" selected>2.5s</option>
+            <option value="2000">2.0s (Level 3–4)</option>
+            <option value="1500">1.5s</option>
+            <option value="1000">1.0s (Level 5+)</option>
+            <option value="700">0.7s (speed)</option>
+          </select>
+        </label>
+        <label class="inline-label" title="Hide upcoming numbers — reveal each only when its audio plays">
+          <input type="checkbox" id="chk-listening-mode" checked />
+          🎧 Listening
+        </label>
+        <label class="inline-label" title="Wait for the student to perform each operation on the abacus before playing the next step">
+          <input type="checkbox" id="chk-auto-advance" checked />
+          🤖 Auto
+        </label>
+        <button class="btn sm" id="btn-dict-prev" title="Go back to the previous spoken step and replay it">⏮ Prev</button>
+        <button class="btn sm" id="btn-dict-play">▶ Play</button>
+        <button class="btn sm" id="btn-dict-pause">⏸</button>
+        <button class="btn sm" id="btn-dict-repeat" title="Repeat the current step">↻ Repeat</button>
+      </div>
     </div>
   </section>
 
@@ -167,6 +254,7 @@
     <div class="practice-header">
       <h3>Practice</h3>
       <div class="practice-meta">
+        <span id="now-practicing" class="now-practicing hidden"></span>
         <span id="qpos">—</span>
         <span id="trick-tag" class="trick-tag hidden"></span>
       </div>
@@ -204,11 +292,25 @@
   <div class="formula-list" id="formula-list"></div>
 </aside>
 
+<!-- AUDIO PROMPT — shown until the student taps once to unlock TTS -->
+<div id="audio-prompt" class="audio-prompt glass hidden">
+  <span class="ap-icon">🔊</span>
+  <span class="ap-text"><b>Tap anywhere</b> to enable audio for the listening practice</span>
+</div>
+
+<!-- RESUME BANNER -->
+<div id="restore-banner" class="restore-banner glass hidden">
+  <span class="rb-icon">📂</span>
+  <span class="rb-text">Resume previous practice — <b id="restore-summary"></b>?</span>
+  <button class="btn primary sm" id="btn-restore-yes">Resume</button>
+  <button class="btn sm" id="btn-restore-no">Discard</button>
+</div>
+
 <!-- TOAST + CONFETTI -->
 <div id="toast" class="toast hidden"></div>
 <canvas id="confetti"></canvas>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

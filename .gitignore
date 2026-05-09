@@ -14,3 +14,6 @@ backend/session-logs.json
 
 # Earlier scaffold attempt (orphaned nested repo)
 Real-time-collaborative-digital-abacus-for-online-tutoring/
+
+# Claude Code per-machine session settings
+.claude/

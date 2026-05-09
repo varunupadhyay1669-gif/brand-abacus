@@ -1,6 +1,7 @@
 // Abacus Studio backend - Express + Socket.IO
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -9,10 +10,37 @@ const { Server } = require('socket.io');
 const PORT = process.env.PORT || 3001;
 const ROOT = path.join(__dirname, '..');
 const LOG_FILE = path.join(__dirname, 'session-logs.json');
+const LOG_FILE_TMP = LOG_FILE + '.tmp';
+const MAX_LOG_ENTRIES = 2000;       // AUTONOMOUS: [ORDER-4] FP1 — cap log file growth
+const MAX_BEADS_PER_UPDATE = 30;    // AUTONOMOUS: [ORDER-4] FP3 — cap rod count payload
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '256kb' }));
+
+// AUTONOMOUS: [ORDER-1] defense-in-depth security headers. Server-side input
+// validation is the primary XSS defense; CSP is a second line that limits
+// blast radius if an unsanitized field slips through. unsafe-inline on style-src
+// is unavoidable here because the bead positioning sets `style="transform:..."`
+// inline on every render. script-src does NOT allow unsafe-inline.
+app.use((req, res, next) => {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' https://cdn.socket.io",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data:",
+    "connect-src 'self' ws: wss:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
 
 // Serve frontend statics from repo root
 app.use(express.static(ROOT));
@@ -29,22 +57,86 @@ function defaultState() {
     studentLocked: true, // students start in view-only mode
     currentQuestion: null,
     visibility: 'full', // 'full' | 'fade50' | 'fade20' | 'hidden' (Anzan / mental-abacus mode)
+    // MIRROR MODE — when true, teacher and student each have an independent
+    // abacus side-by-side. Off by default; the existing single-abacus flow
+    // continues to use beadsState as the shared source of truth.
+    mirrorMode: false,
+    teacherBeads: [],
+    studentBeads: [],
+    // WHITEBOARD — pasted question images shared with the student.
+    whiteboardOpen: false,
+    whiteboardImages: [], // [{ id, src, w, h, addedAt }], capped to MAX_WB_IMAGES
   };
 }
 
+const MAX_WB_IMAGES = 5;
+const MAX_WB_BYTES_PER_IMG = 700 * 1024; // ~700KB compressed/base64
+
+// AUTONOMOUS: [ORDER-1] C5 — serialize log writes through a single-flight queue
+// so concurrent POSTs don't read-modify-write over each other. Atomic via
+// write-temp-then-rename so a crash mid-write doesn't corrupt the file.
+let logWriteChain = Promise.resolve();
 function appendSessionLog(entry) {
-  try {
-    let arr = [];
-    if (fs.existsSync(LOG_FILE)) {
-      try { arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')); } catch (_) { arr = []; }
+  logWriteChain = logWriteChain.then(() => new Promise((resolve) => {
+    try {
+      let arr = [];
+      if (fs.existsSync(LOG_FILE)) {
+        try { arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8')); } catch (_) { arr = []; }
+      }
+      arr.push({ ...entry, savedAt: new Date().toISOString() });
+      // FP1: trim to last MAX_LOG_ENTRIES
+      if (arr.length > MAX_LOG_ENTRIES) arr = arr.slice(arr.length - MAX_LOG_ENTRIES);
+      fs.writeFileSync(LOG_FILE_TMP, JSON.stringify(arr, null, 2));
+      fs.renameSync(LOG_FILE_TMP, LOG_FILE);
+      resolve(true);
+    } catch (e) {
+      console.error('session log write failed', e);
+      try { fs.existsSync(LOG_FILE_TMP) && fs.unlinkSync(LOG_FILE_TMP); } catch (_) {}
+      resolve(false);
     }
-    arr.push({ ...entry, savedAt: new Date().toISOString() });
-    fs.writeFileSync(LOG_FILE, JSON.stringify(arr, null, 2));
-    return true;
-  } catch (e) {
-    console.error('session log write failed', e);
-    return false;
-  }
+  }));
+  return logWriteChain;
+}
+
+// AUTONOMOUS: [ORDER-1] C2 — strict validation/sanitization for session-log POST.
+// Anything written here is later rendered in the Progress panel; without these
+// checks a malicious POST can store an XSS payload that fires for every teacher.
+const SAFE_TEXT_RE = /^[\p{L}\p{N}\s._@'\-]{0,64}$/u; // letters, digits, spaces, common punct
+const SAFE_ROOM_RE = /^[A-Z0-9]{1,12}$|^solo$/;
+function safeText(v, max = 64) {
+  if (typeof v !== 'string') return '';
+  const s = v.trim().slice(0, max);
+  return SAFE_TEXT_RE.test(s) ? s : '';
+}
+function clampNum(v, lo, hi) { v = +v || 0; return Math.max(lo, Math.min(hi, v)); }
+function sanitizeSessionLog(body) {
+  if (!body || typeof body !== 'object') return null;
+  const roomCode = (body.roomCode || '').toString().toUpperCase();
+  if (!SAFE_ROOM_RE.test(roomCode)) return null;
+  const out = {
+    roomCode,
+    studentName: safeText(body.studentName, 64),
+    startedAt: typeof body.startedAt === 'string' ? body.startedAt.slice(0, 40) : null,
+    totalTimeSec: clampNum(body.totalTimeSec, 0, 24 * 3600),
+    score: clampNum(body.score, 0, 1e6),
+    streak: clampNum(body.streak, 0, 1000),
+    correctCount: clampNum(body.correctCount, 0, 5000),
+    wrongCount: clampNum(body.wrongCount, 0, 5000),
+    accuracy: Math.max(0, Math.min(1, +body.accuracy || 0)),
+    assistedCount: clampNum(body.assistedCount, 0, 5000),
+    questions: Array.isArray(body.questions) ? body.questions.slice(0, 200).map(q => ({
+      trickId: safeText(q.trickId, 40),
+      start: clampNum(q.start, 0, 1e12),
+      ops: Array.isArray(q.ops) ? q.ops.slice(0, 50).map(o => ({
+        op: o.op === '+' || o.op === '-' ? o.op : '+',
+        n: clampNum(o.n, 0, 9999),
+      })) : [],
+      expected: clampNum(q.expected, -1e12, 1e12),
+      elapsedSec: Math.max(0, +q.elapsedSec || 0),
+      correct: !!q.correct,
+    })) : [],
+  };
+  return out;
 }
 
 // 6-char code, exclude O 0 I 1
@@ -95,10 +187,11 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }))
 
 // Persist a session summary (questions, answers, time, accuracy).
 // MVP storage: JSON file on disk. Drop-in replace with Postgres/Supabase later.
-app.post('/api/session-log', (req, res) => {
-  const body = req.body || {};
-  if (!body.roomCode) return res.status(400).json({ ok: false, error: 'missing_roomCode' });
-  const ok = appendSessionLog(body);
+app.post('/api/session-log', async (req, res) => {
+  // AUTONOMOUS: [ORDER-1] C2 — sanitize before persisting
+  const clean = sanitizeSessionLog(req.body);
+  if (!clean) return res.status(400).json({ ok: false, error: 'invalid_payload' });
+  const ok = await appendSessionLog(clean);
   res.json({ ok });
 });
 
@@ -112,8 +205,73 @@ app.get('/api/session-logs', (_req, res) => {
   }
 });
 
+// Sessions filtered by student name (case-insensitive). For the Progress panel.
+app.get('/api/sessions/by-student/:name', (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json({ ok: true, sessions: [], summary: emptySummary() });
+    const arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
+    const want = (req.params.name || '').trim().toLowerCase();
+    const sessions = arr.filter(s => (s.studentName || '').toLowerCase() === want);
+    res.json({ ok: true, sessions, summary: summarizeSessions(sessions) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'read_failed' });
+  }
+});
+
+// Sessions for a given room (one-shot: any session that ran in this room code).
+app.get('/api/sessions/by-room/:code', (req, res) => {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return res.json({ ok: true, sessions: [], summary: emptySummary() });
+    const arr = JSON.parse(fs.readFileSync(LOG_FILE, 'utf8'));
+    const want = (req.params.code || '').toUpperCase();
+    const sessions = arr.filter(s => (s.roomCode || '').toUpperCase() === want);
+    res.json({ ok: true, sessions, summary: summarizeSessions(sessions) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'read_failed' });
+  }
+});
+
+function emptySummary() {
+  return { totalSessions: 0, totalQuestions: 0, totalCorrect: 0, accuracy: 0, totalTimeSec: 0, weakestTrick: null };
+}
+function summarizeSessions(sessions) {
+  if (!sessions.length) return emptySummary();
+  let q = 0, c = 0, t = 0;
+  const trickStats = {};
+  for (const s of sessions) {
+    q += (s.correctCount || 0) + (s.wrongCount || 0);
+    c += (s.correctCount || 0);
+    t += (s.totalTimeSec || 0);
+    for (const qq of (s.questions || [])) {
+      if (!qq.trickId) continue;
+      const ts = trickStats[qq.trickId] = trickStats[qq.trickId] || { c: 0, n: 0 };
+      ts.n++;
+      if (qq.correct) ts.c++;
+    }
+  }
+  let weakestTrick = null, weakAcc = 2;
+  for (const [tid, ts] of Object.entries(trickStats)) {
+    const acc = ts.n ? ts.c / ts.n : 1;
+    if (acc < weakAcc) { weakAcc = acc; weakestTrick = tid; }
+  }
+  return {
+    totalSessions: sessions.length,
+    totalQuestions: q,
+    totalCorrect: c,
+    accuracy: q ? +(c / q).toFixed(3) : 0,
+    totalTimeSec: t,
+    weakestTrick,
+  };
+}
+
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+// Bump max payload so pasted (compressed) question images go through. Default
+// is 1MB which is too tight; we cap individual images to ~700KB but also leave
+// headroom for occasional larger uncompressed images / state snapshots.
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+  maxHttpBufferSize: 5 * 1024 * 1024,
+});
 
 io.on('connection', (socket) => {
   let joinedCode = null;
@@ -121,8 +279,14 @@ io.on('connection', (socket) => {
 
   socket.on('create-room', (_payload, ack) => {
     const code = genCode();
+    // AUTONOMOUS: [ORDER-1] C4 — issue a teacher token at room creation. Only
+    // a client that presents this token can later claim teacher role on
+    // rejoin. Stops a malicious peer from hijacking after the teacher's
+    // socket drops momentarily.
+    const teacherToken = crypto.randomBytes(16).toString('hex');
     rooms.set(code, {
       teacherId: socket.id,
+      teacherToken,
       students: new Set(),
       state: defaultState(),
       lastActivity: Date.now()
@@ -130,17 +294,20 @@ io.on('connection', (socket) => {
     socket.join(code);
     joinedCode = code;
     role = 'teacher';
-    ack && ack({ ok: true, code });
+    ack && ack({ ok: true, code, teacherToken });
     io.to(code).emit('user-count-update', { teacher: 1, students: 0 });
   });
 
-  socket.on('join-room', ({ code, asRole } = {}, ack) => {
+  socket.on('join-room', ({ code, asRole, teacherToken } = {}, ack) => {
     code = (code || '').toUpperCase();
     const r = rooms.get(code);
     if (!r) { ack && ack({ ok: false, error: 'not_found' }); return; }
     socket.join(code);
     joinedCode = code;
-    if (asRole === 'teacher' && !r.teacherId) {
+    // AUTONOMOUS: [ORDER-1] C4 — only honor asRole='teacher' when the right
+    // token is presented. Anyone else falls back to student.
+    const tokenOk = teacherToken && r.teacherToken && teacherToken === r.teacherToken;
+    if (asRole === 'teacher' && tokenOk) {
       r.teacherId = socket.id;
       role = 'teacher';
     } else {
@@ -193,13 +360,23 @@ io.on('connection', (socket) => {
   function ack(cb, payload) { try { cb && cb(payload); } catch (_) {} }
 
   // ---- Bead manipulation: gated by lock for students ----
+  // AUTONOMOUS: [ORDER-4] FP2 — per-socket throttle for bead-update so a buggy
+  // or malicious client can't fan out > ~30 updates/sec. Drops silently when
+  // breaching; the next legitimate update will catch up authoritative state.
+  let lastBeadUpdateAt = 0;
   socket.on('bead-update', (data, cb) => {
+    const now = Date.now();
+    if (now - lastBeadUpdateAt < 30) return ack(cb, { ok: false, error: 'throttled' });
+    lastBeadUpdateAt = now;
     const r = getRoom();
     if (!r) return ack(cb, { ok: false, error: 'no_room' });
     if (!isTeacher() && r.state.studentLocked) {
-      // Reassert authoritative state to the offending student so their UI reverts
       socket.emit('bead-update', { rodCount: r.state.rodCount, beadsState: r.state.beadsState });
       return ack(cb, { ok: false, error: 'locked' });
+    }
+    // AUTONOMOUS: [ORDER-4] FP3 — cap payload size to prevent memory abuse
+    if (data && Array.isArray(data.beadsState) && data.beadsState.length > MAX_BEADS_PER_UPDATE) {
+      return ack(cb, { ok: false, error: 'too_many_rods' });
     }
     r.state.rodCount = (data && data.rodCount) || r.state.rodCount;
     r.state.beadsState = (data && data.beadsState) || r.state.beadsState;
@@ -296,6 +473,119 @@ io.on('connection', (socket) => {
     touch(joinedCode);
     io.to(joinedCode).emit('set-visibility', { visibility });
     ack(cb, { ok: true, visibility });
+  });
+
+  // ---- MIRROR MODE: dual independent abacuses (teacher-authoritative) ----
+  // When ON, both sides keep their own beadsState. When OFF, the teacher's
+  // last-known state becomes the new shared beadsState (single source of
+  // truth restored).
+  socket.on('set-mirror-mode', ({ on } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    const wasOn = !!r.state.mirrorMode;
+    r.state.mirrorMode = !!on;
+    if (on && !wasOn) {
+      // Seed both sides from the current shared state so beads don't pop
+      r.state.teacherBeads = JSON.parse(JSON.stringify(r.state.beadsState || []));
+      r.state.studentBeads = JSON.parse(JSON.stringify(r.state.beadsState || []));
+    } else if (!on && wasOn) {
+      // Returning to single-abacus: teacher's state wins (authority)
+      r.state.beadsState = JSON.parse(JSON.stringify(r.state.teacherBeads || r.state.beadsState));
+    }
+    touch(joinedCode);
+    io.to(joinedCode).emit('set-mirror-mode', {
+      on: r.state.mirrorMode,
+      rodCount: r.state.rodCount,
+      teacherBeads: r.state.teacherBeads,
+      studentBeads: r.state.studentBeads,
+      beadsState: r.state.beadsState,
+    });
+    ack(cb, { ok: true, on: r.state.mirrorMode });
+  });
+
+  socket.on('mirror-bead-update', (data, cb) => {
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (!r.state.mirrorMode) return ack(cb, { ok: false, error: 'not_mirror' });
+    if (data && Array.isArray(data.beadsState) && data.beadsState.length > MAX_BEADS_PER_UPDATE) {
+      return ack(cb, { ok: false, error: 'too_many_rods' });
+    }
+    const isT = isTeacher();
+    if (isT) r.state.teacherBeads = (data && data.beadsState) || r.state.teacherBeads;
+    else     r.state.studentBeads = (data && data.beadsState) || r.state.studentBeads;
+    touch(joinedCode);
+    socket.to(joinedCode).emit('mirror-bead-update', {
+      side: isT ? 'teacher' : 'student',
+      beadsState: data && data.beadsState,
+      rodCount: r.state.rodCount,
+    });
+    ack(cb, { ok: true });
+  });
+
+  // ---- WHITEBOARD: paste-image side panel for question sheets ----
+  // Teacher-authoritative: only the teacher can add/remove/clear/toggle.
+  function isDataUrlImage(s) {
+    return typeof s === 'string' && /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(s);
+  }
+  socket.on('whiteboard-add', ({ src, w, h } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    if (!isDataUrlImage(src)) return ack(cb, { ok: false, error: 'bad_image' });
+    if (src.length > MAX_WB_BYTES_PER_IMG) return ack(cb, { ok: false, error: 'too_large' });
+    const img = {
+      id: crypto.randomBytes(6).toString('hex'),
+      src,
+      w: clampNum(w, 1, 8000),
+      h: clampNum(h, 1, 8000),
+      addedAt: Date.now(),
+    };
+    r.state.whiteboardImages.push(img);
+    if (r.state.whiteboardImages.length > MAX_WB_IMAGES) r.state.whiteboardImages.shift();
+    r.state.whiteboardOpen = true;
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-add', img);
+    io.to(joinedCode).emit('whiteboard-toggle', { open: true });
+    ack(cb, { ok: true, id: img.id });
+  });
+
+  socket.on('whiteboard-remove', ({ id } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    const before = r.state.whiteboardImages.length;
+    r.state.whiteboardImages = r.state.whiteboardImages.filter(i => i.id !== id);
+    if (r.state.whiteboardImages.length === before) return ack(cb, { ok: false, error: 'not_found' });
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-remove', { id });
+    ack(cb, { ok: true });
+  });
+
+  socket.on('whiteboard-clear', (_data, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    r.state.whiteboardImages = [];
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-clear', {});
+    ack(cb, { ok: true });
+  });
+
+  socket.on('whiteboard-toggle', ({ open } = {}, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    r.state.whiteboardOpen = !!open;
+    touch(joinedCode);
+    io.to(joinedCode).emit('whiteboard-toggle', { open: r.state.whiteboardOpen });
+    ack(cb, { ok: true });
+  });
+
+  // ---- LISTENING PRACTICE: teacher's dictation step → student reveal + TTS ----
+  // Each time the teacher's dictation engine advances/jumps to a step, we tell
+  // the student which row to reveal and they speak that step locally so audio
+  // stays in sync with the visible reveal. Teacher-only (no student override).
+  socket.on('dictation-step', (data, cb) => {
+    if (!isTeacher()) return ack(cb, { ok: false, error: 'teacher_only' });
+    const r = getRoom(); if (!r) return ack(cb, { ok: false, error: 'no_room' });
+    touch(joinedCode);
+    socket.to(joinedCode).emit('dictation-step', data || {});
+    ack(cb, { ok: true });
   });
 
   // ---- Student → Teacher: "I'm stuck, show me" ----
