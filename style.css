@@ -350,6 +350,124 @@ body.whiteboard-on .layout{
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 
+/* SHEET GENERATOR — full-screen worksheet dashboard */
+.sheet-gen{
+  position:fixed;inset:0;z-index:80;
+  background:var(--bg-main);
+  display:flex;flex-direction:column;
+  animation:float-in .25s ease both;
+}
+.sheet-gen.hidden{display:none}
+.sg-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:14px 22px;border-bottom:1px solid var(--border);
+  background:var(--bg-panel);
+}
+.sg-header h2{font-size:20px;font-weight:700}
+.sg-header-actions{display:flex;gap:8px;align-items:center}
+.sg-body{
+  flex:1;display:grid;grid-template-columns:320px 1fr;gap:16px;
+  padding:16px 22px;overflow:hidden;
+}
+.sg-controls{
+  background:var(--bg-panel-2);border:1px solid var(--border);border-radius:14px;
+  padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:18px;
+}
+.sg-section h4{
+  font-size:12px;font-weight:700;color:var(--accent-primary-2);
+  text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px;
+  border-bottom:1px solid var(--border);padding-bottom:6px;
+}
+.sg-field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px;font-size:11px}
+.sg-field input,.sg-field select{font-size:14px}
+.sg-field-inline{
+  display:flex;align-items:center;gap:8px;
+  color:var(--text-dim);font-size:13px;font-weight:500;
+  text-transform:none;letter-spacing:0;margin-bottom:8px;
+}
+.sg-preview{
+  background:#f4f4f4;border-radius:14px;border:1px solid var(--border);
+  padding:24px;overflow-y:auto;
+}
+
+/* The actual worksheet — designed to look identical on screen and on paper */
+.sg-page{
+  background:#fff;color:#0a0f1c;
+  padding:14mm 12mm;
+  margin:0 auto 16px;
+  max-width:210mm;min-height:280mm;
+  box-shadow:0 8px 24px rgba(0,0,0,.25);
+  font-family:'Outfit','Inter',sans-serif;
+  page-break-after:always;
+}
+.sg-page-header{
+  display:flex;justify-content:space-between;align-items:flex-end;
+  border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:18px;
+  font-family:'Outfit',sans-serif;
+}
+.sg-page-title{font-size:22px;font-weight:800;letter-spacing:.5px;color:#111}
+.sg-page-meta{font-size:12px;color:#333;text-align:right;line-height:1.5}
+.sg-page-meta .meta-row{display:flex;gap:8px}
+.sg-page-meta .meta-row b{color:#000;min-width:64px;display:inline-block;border-bottom:1px solid #999;padding:0 4px}
+.sg-grid{
+  display:grid;
+  grid-template-columns:repeat(var(--sg-cols,3),1fr);
+  gap:14px 18px;
+}
+.sg-q{
+  border:1.5px solid #222;border-radius:6px;
+  padding:8px 6px 10px;display:flex;flex-direction:column;align-items:stretch;
+  page-break-inside:avoid;break-inside:avoid;
+  font-family:'Outfit',monospace;color:#111;
+  background:#fff;
+}
+.sg-q-num{
+  font-size:11px;font-weight:700;color:#666;margin-bottom:6px;
+}
+.sg-q-rows{
+  display:flex;flex-direction:column;align-items:flex-end;gap:1px;
+  font-size:var(--sg-font,14pt);
+  font-weight:600;font-variant-numeric:tabular-nums;
+  padding-right:6px;
+}
+.sg-q-rows .row{line-height:1.25}
+.sg-q-answer{
+  margin-top:8px;border-top:2px solid #000;padding-top:6px;
+  min-height:28px;text-align:right;padding-right:6px;
+  font-size:var(--sg-font,14pt);font-weight:700;color:#111;
+}
+.sg-q-answer.blank{
+  background:repeating-linear-gradient(90deg,transparent 0 6px,#aaa 6px 7px) bottom/100% 1px no-repeat;
+}
+.sg-empty{text-align:center;color:#666;padding:60px 20px}
+
+/* Answer key page */
+.sg-page.sg-key{font-size:11pt}
+.sg-key-title{font-size:18px;font-weight:800;color:#111;margin-bottom:14px}
+.sg-key-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:6px 18px;
+  font-family:'Outfit',monospace;color:#111;font-size:12pt;
+}
+.sg-key-grid .row{display:flex;justify-content:space-between;border-bottom:1px dotted #999;padding:3px 4px}
+.sg-key-grid .row b{font-weight:700}
+
+/* PRINT — paper-only, no app chrome */
+@media print{
+  @page{size:A4;margin:10mm}
+  body{background:#fff !important}
+  body > *:not(#sheet-gen){display:none !important}
+  .sheet-gen{position:static;background:#fff;animation:none}
+  .sg-header,.sg-controls{display:none !important}
+  .sg-body{display:block;padding:0;overflow:visible}
+  .sg-preview{background:#fff;padding:0;border:none;overflow:visible}
+  .sg-page{
+    box-shadow:none;margin:0;
+    max-width:none;min-height:auto;
+    padding:0;
+  }
+  .sg-page + .sg-page{page-break-before:always}
+}
+
 /* AUDIO ENABLE PROMPT — clears once student taps once anywhere on the page */
 .audio-prompt{
   position:fixed;left:50%;top:80px;transform:translateX(-50%);

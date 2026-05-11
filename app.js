@@ -2558,6 +2558,188 @@ function formatHMS(secs) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// =============== SHEET GENERATOR (printable worksheet dashboard) ===============
+// Builds on the existing genQuestion engine. Renders a paper-styled preview
+// that's also the print target — @media print hides everything else.
+function openSheetGenerator() {
+  populateSheetSelectors();
+  const dateInput = document.getElementById('sg-date');
+  if (dateInput && !dateInput.value) {
+    const d = new Date();
+    dateInput.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  document.getElementById('sheet-gen')?.classList.remove('hidden');
+  generateSheet(); // initial preview
+}
+function closeSheetGenerator() {
+  document.getElementById('sheet-gen')?.classList.add('hidden');
+}
+
+function populateSheetSelectors() {
+  const levelSel = document.getElementById('sg-level');
+  const trickSel = document.getElementById('sg-trick');
+  if (!levelSel || !trickSel) return;
+  if (!levelSel.options.length) {
+    LEVELS.forEach(l => {
+      const o = document.createElement('option');
+      o.value = l.id; o.textContent = l.name;
+      levelSel.appendChild(o);
+    });
+    levelSel.value = '1';
+    levelSel.addEventListener('change', () => { refreshSheetTrickOptions(); generateSheet(); });
+  }
+  refreshSheetTrickOptions();
+}
+function refreshSheetTrickOptions() {
+  const levelId = +document.getElementById('sg-level').value;
+  const level = LEVELS.find(l => l.id === levelId) || LEVELS[0];
+  const sel = document.getElementById('sg-trick');
+  sel.innerHTML = '<option value="auto">Auto (any in this level)</option>';
+  level.tricks.forEach(tid => {
+    const o = document.createElement('option');
+    o.value = tid; o.textContent = TRICKS[tid].name;
+    sel.appendChild(o);
+  });
+}
+
+// Generate questions according to the form, store on a generator-local state,
+// and refresh the preview. Re-callable for "Regenerate".
+const sheetState = { questions: [] };
+function generateSheet() {
+  const levelId = +document.getElementById('sg-level').value || 1;
+  const level = LEVELS.find(l => l.id === levelId) || LEVELS[0];
+  const trickSel = document.getElementById('sg-trick').value;
+  const count = Math.max(6, Math.min(120, +document.getElementById('sg-count').value || 30));
+  const rows = Math.max(2, +document.getElementById('sg-rows').value || 5);
+  const availableTricks = trickSel === 'auto' ? level.tricks : [trickSel];
+  const qs = [];
+  for (let i = 0; i < count; i++) {
+    const tid = availableTricks[Math.floor(Math.random() * availableTricks.length)];
+    qs.push(genQuestion(tid, rows));
+  }
+  sheetState.questions = qs;
+  renderSheetPreview();
+}
+
+function renderSheetPreview() {
+  const preview = document.getElementById('sg-preview');
+  if (!preview) return;
+  const qs = sheetState.questions;
+  if (!qs.length) {
+    preview.innerHTML = '<div class="sg-empty">Click Regenerate to build a sheet.</div>';
+    return;
+  }
+  const title = document.getElementById('sg-title').value || 'Abacus Worksheet';
+  const student = document.getElementById('sg-student').value || '';
+  const date = document.getElementById('sg-date').value || '';
+  const cols = +document.getElementById('sg-cols').value || 3;
+  const font = +document.getElementById('sg-font').value || 14;
+  const showNumbers = document.getElementById('sg-numbers').checked;
+  const showKey = document.getElementById('sg-answer-key').checked;
+
+  // Split questions across pages so questions never break across pages
+  // We approximate: ~ rows-per-q * 2 cells of vertical space per question.
+  // Conservative: 36 questions per A4 page at 3 cols × 12 rows.
+  const perPage = Math.max(cols * 4, Math.floor(36 / Math.max(1, font / 14)));
+  const pages = [];
+  for (let i = 0; i < qs.length; i += perPage) pages.push(qs.slice(i, i + perPage));
+
+  const pageHtml = pages.map((pageQs, pageIdx) => {
+    const grid = pageQs.map((q, idx) => {
+      const globalIdx = pageIdx * perPage + idx + 1;
+      const rowsHtml = [`<div class="row">${q.start}</div>`].concat(
+        q.ops.map(o => `<div class="row">${o.op}${o.n}</div>`)
+      ).join('');
+      return `
+        <div class="sg-q">
+          ${showNumbers ? `<div class="sg-q-num">${globalIdx}.</div>` : ''}
+          <div class="sg-q-rows">${rowsHtml}</div>
+          <div class="sg-q-answer blank"></div>
+        </div>
+      `;
+    }).join('');
+    return `
+      <div class="sg-page" style="--sg-cols:${cols};--sg-font:${font}pt">
+        <div class="sg-page-header">
+          <div class="sg-page-title">${escapeHtml(title)}</div>
+          <div class="sg-page-meta">
+            ${student ? `<div class="meta-row">Student: <b>${escapeHtml(student)}</b></div>` : `<div class="meta-row">Student: <b>&nbsp;</b></div>`}
+            <div class="meta-row">Date: <b>${escapeHtml(date || ' ')}</b></div>
+            <div class="meta-row">Page ${pageIdx + 1} of ${pages.length + (showKey ? 1 : 0)}</div>
+          </div>
+        </div>
+        <div class="sg-grid">${grid}</div>
+      </div>
+    `;
+  }).join('');
+
+  const keyHtml = showKey ? `
+    <div class="sg-page sg-key">
+      <div class="sg-key-title">${escapeHtml(title)} — Answer Key</div>
+      <div class="sg-key-grid">
+        ${qs.map((q, i) => `<div class="row"><span>${i + 1}.</span><b>${q.answer}</b></div>`).join('')}
+      </div>
+    </div>
+  ` : '';
+
+  preview.innerHTML = pageHtml + keyHtml;
+}
+
+function printSheet() {
+  // The @media print CSS hides everything except #sheet-gen .sg-preview content
+  window.print();
+}
+
+function loadSheetAsPractice() {
+  const qs = sheetState.questions;
+  if (!qs.length) { toast('Nothing to load — generate a sheet first'); return; }
+  // Reset session counters and run the questions through the practice engine
+  state.allQuestions = qs.slice();
+  state.currentQIndex = 0;
+  state.currentMode = 'guided';
+  state.score = 0; state.streak = 0;
+  state.correctCount = 0; state.wrongCount = 0;
+  state.assistedCount = 0;
+  state.questionTimings = [];
+  state.sessionStart = Date.now();
+  state.currentExerciseTitle = document.getElementById('sg-title').value || 'Generated worksheet';
+  setNowPracticing(state.currentExerciseTitle);
+  startTimer();
+  updatePills();
+  loadQuestion();
+  emitSession();
+  closeSheetGenerator();
+  toast(`▶ Loaded ${qs.length} questions into practice`);
+}
+
+function wireSheetGenerator() {
+  document.getElementById('btn-open-sheets')?.addEventListener('click', openSheetGenerator);
+  document.getElementById('btn-sg-close')?.addEventListener('click', closeSheetGenerator);
+  document.getElementById('btn-sg-regen')?.addEventListener('click', generateSheet);
+  document.getElementById('btn-sg-print')?.addEventListener('click', printSheet);
+  document.getElementById('btn-sg-load')?.addEventListener('click', loadSheetAsPractice);
+  // Live re-render on any setting change (cheap — preview is just innerHTML)
+  ['sg-title', 'sg-student', 'sg-date', 'sg-cols', 'sg-font', 'sg-numbers', 'sg-answer-key']
+    .forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', renderSheetPreview);
+      el.addEventListener('change', renderSheetPreview);
+    });
+  // These three actually rebuild the question set
+  ['sg-trick', 'sg-count', 'sg-rows'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', generateSheet);
+  });
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.getElementById('sheet-gen').classList.contains('hidden')) {
+      closeSheetGenerator();
+    }
+  });
+}
+
 // =============== UI WIRING ===============
 function populateSelectors() {
   const levelSel = $('#sel-level');
@@ -2791,6 +2973,7 @@ document.addEventListener('DOMContentLoaded', () => {
   renderLibraryCategoryTabs();
   renderLibraryCards();
   wireWhiteboard();
+  wireSheetGenerator();
   wireTTSPrimer();
   // AUTONOMOUS: [ORDER-2] offer to resume an interrupted session
   tryShowRestoreBanner();
